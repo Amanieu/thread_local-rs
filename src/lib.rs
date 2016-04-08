@@ -15,6 +15,11 @@
 //! Per-thread objects are not destroyed when a thread exits. Instead, objects
 //! are only destroyed when the `ThreadLocal` containing them is destroyed.
 //!
+//! A `CachedThreadLocal` type is also provided which wraps a `ThreadLocal` but
+//! also uses a special fast path for the first thread that writes into it. The
+//! fast path has very low overhead (<1ns per access) while keeping the same
+//! performance as `ThreadLocal` for other threads.
+//!
 //! Note that since thread IDs are recycled when a thread exits, it is possible
 //! for one thread to retrieve the object of another thread. Since this can only
 //! occur after a thread has exited this does not lead to any race conditions.
@@ -228,10 +233,9 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
             let owner = entry.owner.load(Ordering::Relaxed);
             if owner == 0 {
                 unsafe {
-                    let ptr = &*data as *const T;
                     entry.owner.store(id, Ordering::Relaxed);
                     *entry.data.get() = Some(data);
-                    return &*ptr;
+                    return (*entry.data.get()).as_ref().unchecked_unwrap();
                 }
             }
             if owner == id {
@@ -256,6 +260,89 @@ impl<T: ?Sized + Send + Default> ThreadLocal<T> {
     }
 }
 
+/// Wrapper around `ThreadLocal` which adds a fast path for a single thread.
+///
+/// This has the same API as `ThreadLocal`, but will register the first thread
+/// that sets a value as its owner. All accesses by the owner will go through
+/// a special fast path which is much faster than the normal `ThreadLocal` path.
+pub struct CachedThreadLocal<T: ?Sized + Send> {
+    owner: AtomicUsize,
+    local: UnsafeCell<Option<Box<T>>>,
+    global: ThreadLocal<T>,
+}
+
+// CachedThreadLocal is always Sync, even if T isn't
+unsafe impl<T: ?Sized + Send> Sync for CachedThreadLocal<T> {}
+
+impl<T: ?Sized + Send> Default for CachedThreadLocal<T> {
+    fn default() -> CachedThreadLocal<T> {
+        CachedThreadLocal::new()
+    }
+}
+
+impl<T: ?Sized + Send> CachedThreadLocal<T> {
+    /// Creates a new empty `CachedThreadLocal`.
+    pub fn new() -> CachedThreadLocal<T> {
+        CachedThreadLocal {
+            owner: AtomicUsize::new(0),
+            local: UnsafeCell::new(None),
+            global: ThreadLocal::new(),
+        }
+    }
+
+    /// Returns the element for the current thread, if it exists.
+    pub fn get(&self) -> Option<&T> {
+        let id = thread_id::get() as usize;
+        let owner = self.owner.load(Ordering::Relaxed);
+        if owner == id {
+            return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
+        }
+        if owner == 0 {
+            return None;
+        }
+        self.global.get_fast(id)
+    }
+
+    /// Returns the element for the current thread, or creates it if it doesn't
+    /// exist.
+    pub fn get_or<F>(&self, create: F) -> &T
+        where F: FnOnce() -> Box<T>
+    {
+        let id = thread_id::get() as usize;
+        let owner = self.owner.load(Ordering::Relaxed);
+        if owner == id {
+            return unsafe { (*self.local.get()).as_ref().unchecked_unwrap() };
+        }
+        self.get_or_slow(id, owner, create)
+    }
+
+    #[cold]
+    fn get_or_slow<F>(&self, id: usize, owner: usize, create: F) -> &T
+        where F: FnOnce() -> Box<T>
+    {
+        if owner == 0 {
+            if self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
+                unsafe {
+                    (*self.local.get()) = Some(create());
+                    return (*self.local.get()).as_ref().unchecked_unwrap();
+                }
+            }
+        }
+        match self.global.get_fast(id) {
+            Some(x) => x,
+            None => self.global.insert(id, create(), true),
+        }
+    }
+}
+
+impl<T: ?Sized + Send + Default> CachedThreadLocal<T> {
+    /// Returns the element for the current thread, or creates a default one if
+    /// it doesn't exist.
+    pub fn get_default(&self) -> &T {
+        self.get_or(|| Box::new(T::default()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -263,7 +350,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::thread;
-    use super::ThreadLocal;
+    use super::{ThreadLocal, CachedThreadLocal};
 
     fn make_create() -> Arc<Fn() -> Box<usize> + Send + Sync> {
         let count = AtomicUsize::new(0);
@@ -274,25 +361,69 @@ mod tests {
     fn same_thread() {
         let create = make_create();
         let tls = ThreadLocal::new();
+        assert_eq!(None, tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+    }
+
+    #[test]
+    fn same_thread_cached() {
+        let create = make_create();
+        let tls = CachedThreadLocal::new();
+        assert_eq!(None, tls.get());
+        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
     }
 
     #[test]
     fn different_thread() {
         let create = make_create();
         let tls = Arc::new(ThreadLocal::new());
+        assert_eq!(None, tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
 
         let tls2 = tls.clone();
         let create2 = create.clone();
         thread::spawn(move || {
+            assert_eq!(None, tls2.get());
             assert_eq!(1, *tls2.get_or(|| create2()));
+            assert_eq!(Some(&1), tls2.get());
         })
             .join()
             .unwrap();
 
+        assert_eq!(Some(&0), tls.get());
+        assert_eq!(0, *tls.get_or(|| create()));
+    }
+
+    #[test]
+    fn different_thread_cached() {
+        let create = make_create();
+        let tls = Arc::new(CachedThreadLocal::new());
+        assert_eq!(None, tls.get());
+        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+
+        let tls2 = tls.clone();
+        let create2 = create.clone();
+        thread::spawn(move || {
+            assert_eq!(None, tls2.get());
+            assert_eq!(1, *tls2.get_or(|| create2()));
+            assert_eq!(Some(&1), tls2.get());
+        })
+            .join()
+            .unwrap();
+
+        assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
     }
 
@@ -301,5 +432,7 @@ mod tests {
         fn foo<T: Sync>() {}
         foo::<ThreadLocal<String>>();
         foo::<ThreadLocal<RefCell<String>>>();
+        foo::<CachedThreadLocal<String>>();
+        foo::<CachedThreadLocal<RefCell<String>>>();
     }
 }
