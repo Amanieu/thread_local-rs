@@ -188,7 +188,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     #[cold]
     fn get_slow(&self, id: usize, table_top: &Table<T>) -> Option<&T> {
         let mut current = &table_top.prev;
-        while let &Some(ref table) = current {
+        while let Some(ref table) = *current {
             if let Some(x) = Self::lookup(id, table) {
                 let data = unsafe { (*x.get()).take().unchecked_unwrap() };
                 return Some(self.insert(id, data, false));
@@ -320,12 +320,10 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     fn get_or_slow<F>(&self, id: usize, owner: usize, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
-        if owner == 0 {
-            if self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
-                unsafe {
-                    (*self.local.get()) = Some(create());
-                    return (*self.local.get()).as_ref().unchecked_unwrap();
-                }
+        if owner == 0 && self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
+            unsafe {
+                (*self.local.get()) = Some(create());
+                return (*self.local.get()).as_ref().unchecked_unwrap();
             }
         }
         match self.global.get_fast(id) {
