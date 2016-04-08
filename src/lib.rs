@@ -34,7 +34,7 @@
 extern crate thread_id;
 extern crate unreachable;
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::marker::PhantomData;
 use std::cell::UnsafeCell;
@@ -43,7 +43,7 @@ use unreachable::UncheckedOptionExt;
 /// Thread-local variable wrapper
 ///
 /// See the [module-level documentation](index.html) for more.
-pub struct ThreadLocal<T: ?Sized> {
+pub struct ThreadLocal<T: ?Sized + Send> {
     // Pointer to the current top-level hash table
     table: AtomicPtr<Table<T>>,
 
@@ -55,7 +55,7 @@ pub struct ThreadLocal<T: ?Sized> {
     marker: PhantomData<T>,
 }
 
-struct Table<T: ?Sized> {
+struct Table<T: ?Sized + Send> {
     // Hash entries for the table
     entries: Box<[TableEntry<T>]>,
 
@@ -66,7 +66,7 @@ struct Table<T: ?Sized> {
     prev: Option<Box<Table<T>>>,
 }
 
-struct TableEntry<T: ?Sized> {
+struct TableEntry<T: ?Sized + Send> {
     // Current owner of this entry, or 0 if this is an empty entry
     owner: AtomicUsize,
 
@@ -76,15 +76,15 @@ struct TableEntry<T: ?Sized> {
 }
 
 // ThreadLocal is always Sync, even if T isn't
-unsafe impl<T: ?Sized> Sync for ThreadLocal<T> {}
+unsafe impl<T: ?Sized + Send> Sync for ThreadLocal<T> {}
 
-impl<T: ?Sized> Default for ThreadLocal<T> {
+impl<T: ?Sized + Send> Default for ThreadLocal<T> {
     fn default() -> ThreadLocal<T> {
         ThreadLocal::new()
     }
 }
 
-impl<T: ?Sized> Drop for ThreadLocal<T> {
+impl<T: ?Sized + Send> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
         unsafe {
             Box::from_raw(self.table.load(Ordering::Relaxed));
@@ -93,10 +93,10 @@ impl<T: ?Sized> Drop for ThreadLocal<T> {
 }
 
 // Implementation of Clone for TableEntry, needed to make vec![] work
-impl<T: ?Sized> Clone for TableEntry<T> {
+impl<T: ?Sized + Send> Clone for TableEntry<T> {
     fn clone(&self) -> TableEntry<T> {
         TableEntry {
-            owner: ATOMIC_USIZE_INIT,
+            owner: AtomicUsize::new(0),
             data: UnsafeCell::new(None),
         }
     }
@@ -114,11 +114,11 @@ fn hash(id: usize, bits: usize) -> usize {
     id.wrapping_mul(0x9E3779B97F4A7C15) >> (64 - bits)
 }
 
-impl<T: ?Sized> ThreadLocal<T> {
+impl<T: ?Sized + Send> ThreadLocal<T> {
     /// Creates a new empty `ThreadLocal`.
     pub fn new() -> ThreadLocal<T> {
         let entry = TableEntry {
-            owner: ATOMIC_USIZE_INIT,
+            owner: AtomicUsize::new(0),
             data: UnsafeCell::new(None),
         };
         let table = Table {
@@ -209,7 +209,7 @@ impl<T: ?Sized> ThreadLocal<T> {
         // level table as they are accessed.
         let table = if *count > table.entries.len() * 3 / 4 {
             let entry = TableEntry {
-                owner: ATOMIC_USIZE_INIT,
+                owner: AtomicUsize::new(0),
                 data: UnsafeCell::new(None),
             };
             let new_table = Box::into_raw(Box::new(Table {
@@ -248,7 +248,7 @@ impl<T: ?Sized> ThreadLocal<T> {
     }
 }
 
-impl<T: ?Sized + Default> ThreadLocal<T> {
+impl<T: ?Sized + Send + Default> ThreadLocal<T> {
     /// Returns the element for the current thread, or creates a default one if
     /// it doesn't exist.
     pub fn get_default(&self) -> &T {
