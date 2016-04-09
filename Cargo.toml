@@ -10,5 +10,5 @@ readme = "README.md"
 keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
-thread-id = "1"
+thread-id = "2"
 unreachable = "0.1"

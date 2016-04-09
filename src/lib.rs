@@ -140,7 +140,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get() as usize;
+        let id = thread_id::get();
         self.get_fast(id)
     }
 
@@ -149,7 +149,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
-        let id = thread_id::get() as usize;
+        let id = thread_id::get();
         match self.get_fast(id) {
             Some(x) => x,
             None => self.insert(id, create(), true),
@@ -292,7 +292,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get() as usize;
+        let id = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
@@ -308,7 +308,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
-        let id = thread_id::get() as usize;
+        let id = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return unsafe { (*self.local.get()).as_ref().unchecked_unwrap() };
