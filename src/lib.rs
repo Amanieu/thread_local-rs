@@ -305,6 +305,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
 
     /// Returns the element for the current thread, or creates it if it doesn't
     /// exist.
+    #[inline(always)]
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
@@ -317,6 +318,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     }
 
     #[cold]
+    #[inline(never)]
     fn get_or_slow<F>(&self, id: usize, owner: usize, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
