@@ -1,6 +1,6 @@
 [package]
 name = "thread_local"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 description = "Per-object thread-local storage"
 documentation = "https://amanieu.github.io/thread_local-rs/thread_local/index.html"
@@ -10,5 +10,5 @@ readme = "README.md"
 keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
-thread-id = "2"
+thread-id = "2.0"
 unreachable = "0.1"
