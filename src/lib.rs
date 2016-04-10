@@ -252,7 +252,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     }
 }
 
-impl<T: ?Sized + Send + Default> ThreadLocal<T> {
+impl<T: Send + Default> ThreadLocal<T> {
     /// Returns the element for the current thread, or creates a default one if
     /// it doesn't exist.
     pub fn get_default(&self) -> &T {
@@ -335,7 +335,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     }
 }
 
-impl<T: ?Sized + Send + Default> CachedThreadLocal<T> {
+impl<T: Send + Default> CachedThreadLocal<T> {
     /// Returns the element for the current thread, or creates a default one if
     /// it doesn't exist.
     pub fn get_default(&self) -> &T {
