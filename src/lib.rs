@@ -50,6 +50,7 @@ trait UncheckedOptionExt<T> {
 }
 impl<T> UncheckedOptionExt<T> for Option<T> {
     unsafe fn unchecked_unwrap(self) -> T {
+        #[inline]
         unsafe fn unreachable() -> ! {
             enum Void {}
             match *(1 as *const Void) {}
