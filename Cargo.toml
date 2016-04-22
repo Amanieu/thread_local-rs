@@ -11,4 +11,3 @@ keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
 thread-id = "2.0"
-unreachable = "0.1"

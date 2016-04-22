@@ -37,13 +37,45 @@
 #![warn(missing_docs)]
 
 extern crate thread_id;
-extern crate unreachable;
 
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::marker::PhantomData;
 use std::cell::UnsafeCell;
-use unreachable::UncheckedOptionExt;
+use std::mem;
+
+// Option::unchecked_unwrap
+trait UncheckedOptionExt<T> {
+    unsafe fn unchecked_unwrap(self) -> T;
+}
+impl<T> UncheckedOptionExt<T> for Option<T> {
+    unsafe fn unchecked_unwrap(self) -> T {
+        unsafe fn unreachable() -> ! {
+            enum Void {}
+            match *(1 as *const Void) {}
+        }
+        match self {
+            Some(x) => x,
+            None => unreachable(),
+        }
+    }
+}
+
+// BoxExt::{from_raw,into_raw}
+trait BoxExt<T: ?Sized> {
+    fn into_raw(b: Self) -> *mut T;
+    unsafe fn from_raw(raw: *mut T) -> Self;
+}
+impl<T: ?Sized> BoxExt<T> for Box<T> {
+    fn into_raw(mut b: Self) -> *mut T {
+        let ptr: *mut T = &mut *b;
+        mem::forget(b);
+        ptr
+    }
+    unsafe fn from_raw(raw: *mut T) -> Self {
+        mem::transmute(raw)
+    }
+}
 
 /// Thread-local variable wrapper
 ///
@@ -92,7 +124,7 @@ impl<T: ?Sized + Send> Default for ThreadLocal<T> {
 impl<T: ?Sized + Send> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
         unsafe {
-            Box::from_raw(self.table.load(Ordering::Relaxed));
+            let _: Box<Table<T>> = BoxExt::from_raw(self.table.load(Ordering::Relaxed));
         }
     }
 }
@@ -132,7 +164,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
             prev: None,
         };
         ThreadLocal {
-            table: AtomicPtr::new(Box::into_raw(Box::new(table))),
+            table: AtomicPtr::new(BoxExt::into_raw(Box::new(table))),
             lock: Mutex::new(0),
             marker: PhantomData,
         }
@@ -217,10 +249,10 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
                 owner: AtomicUsize::new(0),
                 data: UnsafeCell::new(None),
             };
-            let new_table = Box::into_raw(Box::new(Table {
+            let new_table = BoxExt::into_raw(Box::new(Table {
                 entries: vec![entry; table.entries.len() * 2].into_boxed_slice(),
                 hash_bits: table.hash_bits + 1,
-                prev: unsafe { Some(Box::from_raw(table_raw)) },
+                prev: unsafe { Some(BoxExt::from_raw(table_raw)) },
             }));
             self.table.store(new_table, Ordering::Release);
             unsafe { &*new_table }
