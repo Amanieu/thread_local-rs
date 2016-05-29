@@ -43,6 +43,7 @@ use std::sync::Mutex;
 use std::marker::PhantomData;
 use std::cell::UnsafeCell;
 use std::mem;
+use std::fmt;
 
 // Option::unchecked_unwrap
 trait UncheckedOptionExt<T> {
@@ -294,6 +295,12 @@ impl<T: Send + Default> ThreadLocal<T> {
     }
 }
 
+impl<T: ?Sized + Send + fmt::Debug> fmt::Debug for ThreadLocal<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ThreadLocal {{ data: {:?} }}", self.get())
+    }
+}
+
 /// Wrapper around `ThreadLocal` which adds a fast path for a single thread.
 ///
 /// This has the same API as `ThreadLocal`, but will register the first thread
@@ -377,6 +384,12 @@ impl<T: Send + Default> CachedThreadLocal<T> {
     }
 }
 
+impl<T: ?Sized + Send + fmt::Debug> fmt::Debug for CachedThreadLocal<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ThreadLocal {{ data: {:?} }}", self.get())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -396,12 +409,14 @@ mod tests {
         let create = make_create();
         let tls = ThreadLocal::new();
         assert_eq!(None, tls.get());
+        assert_eq!("ThreadLocal { data: None }", format!("{:?}", &tls));
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
+        assert_eq!("ThreadLocal { data: Some(0) }", format!("{:?}", &tls));
     }
 
     #[test]
@@ -409,12 +424,14 @@ mod tests {
         let create = make_create();
         let tls = CachedThreadLocal::new();
         assert_eq!(None, tls.get());
+        assert_eq!("ThreadLocal { data: None }", format!("{:?}", &tls));
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
+        assert_eq!("ThreadLocal { data: Some(0) }", format!("{:?}", &tls));
     }
 
     #[test]
