@@ -86,7 +86,8 @@ pub struct ThreadLocal<T: ?Sized + Send> {
     table: AtomicPtr<Table<T>>,
 
     // Lock used to guard against concurrent modifications. This is only taken
-    // while writing to the table, not when reading from it.
+    // while writing to the table, not when reading from it. This also guards
+    // the counter for the total number of values in the hash table.
     lock: Mutex<usize>,
 
     // PhantomData to indicate that we logically own T
