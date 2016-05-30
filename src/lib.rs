@@ -15,6 +15,11 @@
 //! Per-thread objects are not destroyed when a thread exits. Instead, objects
 //! are only destroyed when the `ThreadLocal` containing them is destroyed.
 //!
+//! You can also iterate over the thread-local values of all thread in a
+//! `ThreadLocal` object using the `iter_mut` and `into_iter` methods. This can
+//! only be done if you have mutable access to the `ThreadLocal` object, which
+//! guarantees that you are the only thread currently accessing it.
+//!
 //! A `CachedThreadLocal` type is also provided which wraps a `ThreadLocal` but
 //! also uses a special fast path for the first thread that writes into it. The
 //! fast path has very low overhead (<1ns per access) while keeping the same
@@ -24,7 +29,9 @@
 //! for one thread to retrieve the object of another thread. Since this can only
 //! occur after a thread has exited this does not lead to any race conditions.
 //!
-//! # Example
+//! # Examples
+//!
+//! Basic usage of `ThreadLocal`:
 //!
 //! ```rust
 //! use thread_local::ThreadLocal;
@@ -32,6 +39,33 @@
 //! assert_eq!(tls.get(), None);
 //! assert_eq!(tls.get_or(|| Box::new(5)), &5);
 //! assert_eq!(tls.get(), Some(&5));
+//! ```
+//!
+//! Combining thread-local values into a single result:
+//!
+//! ```rust
+//! use thread_local::ThreadLocal;
+//! use std::sync::Arc;
+//! use std::cell::Cell;
+//! use std::thread;
+//!
+//! let tls = Arc::new(ThreadLocal::new());
+//!
+//! // Create a bunch of threads to do stuff
+//! for _ in 0..5 {
+//!     let tls2 = tls.clone();
+//!     thread::spawn(move || {
+//!         // Increment a counter to count some event...
+//!         let cell = tls2.get_or(|| Box::new(Cell::new(0)));
+//!         cell.set(cell.get() + 1);
+//!     }).join().unwrap();
+//! }
+//!
+//! // Once all threads are done, collect the counter values and return the
+//! // sum of all thread-local counter values.
+//! let tls = Arc::try_unwrap(tls).unwrap();
+//! let total = tls.into_iter().fold(0, |x, y| x + y.get());
+//! assert_eq!(total, 5);
 //! ```
 
 #![warn(missing_docs)]
@@ -44,6 +78,8 @@ use std::marker::PhantomData;
 use std::cell::UnsafeCell;
 use std::mem;
 use std::fmt;
+use std::iter::Chain;
+use std::option::IntoIter as OptionIter;
 
 // Option::unchecked_unwrap
 trait UncheckedOptionExt<T> {
@@ -285,6 +321,59 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
         }
         unreachable!();
     }
+
+    /// Returns a mutable iterator over the local values of all threads.
+    ///
+    /// Since this call borrows the `ThreadLocal` mutably, this operation can
+    /// be done safely---the mutable borrow statically guarantees no other
+    /// threads are currently accessing their associated values.
+    pub fn iter_mut(&mut self) -> IterMut<T> {
+        let raw = RawIter {
+            remaining: *self.lock.lock().unwrap(),
+            index: 0,
+            table: self.table.load(Ordering::Relaxed),
+        };
+        IterMut {
+            raw: raw,
+            marker: PhantomData,
+        }
+    }
+
+    /// Removes all thread-specific values from the `ThreadLocal`, effectively
+    /// reseting it to its original state.
+    ///
+    /// Since this call borrows the `ThreadLocal` mutably, this operation can
+    /// be done safely---the mutable borrow statically guarantees no other
+    /// threads are currently accessing their associated values.
+    pub fn clear(&mut self) {
+        *self = ThreadLocal::new();
+    }
+}
+
+impl<T: ?Sized + Send> IntoIterator for ThreadLocal<T> {
+    type Item = Box<T>;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        let raw = RawIter {
+            remaining: *self.lock.lock().unwrap(),
+            index: 0,
+            table: self.table.load(Ordering::Relaxed),
+        };
+        IntoIter {
+            raw: raw,
+            _thread_local: self,
+        }
+    }
+}
+
+impl<'a, T: ?Sized + Send + 'a> IntoIterator for &'a mut ThreadLocal<T> {
+    type Item = &'a mut Box<T>;
+    type IntoIter = IterMut<'a, T>;
+
+    fn into_iter(self) -> IterMut<'a, T> {
+        self.iter_mut()
+    }
 }
 
 impl<T: Send + Default> ThreadLocal<T> {
@@ -297,9 +386,77 @@ impl<T: Send + Default> ThreadLocal<T> {
 
 impl<T: ?Sized + Send + fmt::Debug> fmt::Debug for ThreadLocal<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ThreadLocal {{ data: {:?} }}", self.get())
+        write!(f, "ThreadLocal {{ local_data: {:?} }}", self.get())
     }
 }
+
+struct RawIter<T: ?Sized + Send> {
+    remaining: usize,
+    index: usize,
+    table: *const Table<T>,
+}
+
+impl<T: ?Sized + Send> RawIter<T> {
+    fn next(&mut self) -> Option<*mut Option<Box<T>>> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        loop {
+            let entries = unsafe { &(*self.table).entries[..] };
+            while self.index < entries.len() {
+                let val = entries[self.index].data.get();
+                self.index += 1;
+                if unsafe { (*val).is_some() } {
+                    self.remaining -= 1;
+                    return Some(val);
+                }
+            }
+            self.index = 0;
+            self.table = unsafe { &**(*self.table).prev.as_ref().unchecked_unwrap() };
+        }
+    }
+}
+
+/// Mutable iterator over the contents of a `ThreadLocal`.
+pub struct IterMut<'a, T: ?Sized + Send + 'a> {
+    raw: RawIter<T>,
+    marker: PhantomData<&'a mut ThreadLocal<T>>,
+}
+
+impl<'a, T: ?Sized + Send + 'a> Iterator for IterMut<'a, T> {
+    type Item = &'a mut Box<T>;
+
+    fn next(&mut self) -> Option<&'a mut Box<T>> {
+        self.raw.next().map(|x| unsafe { (*x).as_mut().unchecked_unwrap() })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.raw.remaining, Some(self.raw.remaining))
+    }
+}
+
+impl<'a, T: ?Sized + Send + 'a> ExactSizeIterator for IterMut<'a, T> {}
+
+/// An iterator that moves out of a `ThreadLocal`.
+pub struct IntoIter<T: ?Sized + Send> {
+    raw: RawIter<T>,
+    _thread_local: ThreadLocal<T>,
+}
+
+impl<T: ?Sized + Send> Iterator for IntoIter<T> {
+    type Item = Box<T>;
+
+    fn next(&mut self) -> Option<Box<T>> {
+        self.raw.next().map(|x| unsafe { (*x).take().unchecked_unwrap() })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.raw.remaining, Some(self.raw.remaining))
+    }
+}
+
+impl<T: ?Sized + Send> ExactSizeIterator for IntoIter<T> {}
 
 /// Wrapper around `ThreadLocal` which adds a fast path for a single thread.
 ///
@@ -374,6 +531,43 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
             None => self.global.insert(id, create(), true),
         }
     }
+
+    /// Returns a mutable iterator over the local values of all threads.
+    ///
+    /// Since this call borrows the `ThreadLocal` mutably, this operation can
+    /// be done safely---the mutable borrow statically guarantees no other
+    /// threads are currently accessing their associated values.
+    pub fn iter_mut(&mut self) -> CachedIterMut<T> {
+        unsafe { (*self.local.get()).as_mut().into_iter().chain(self.global.iter_mut()) }
+    }
+
+    /// Removes all thread-specific values from the `ThreadLocal`, effectively
+    /// reseting it to its original state.
+    ///
+    /// Since this call borrows the `ThreadLocal` mutably, this operation can
+    /// be done safely---the mutable borrow statically guarantees no other
+    /// threads are currently accessing their associated values.
+    pub fn clear(&mut self) {
+        *self = CachedThreadLocal::new();
+    }
+}
+
+impl<T: ?Sized + Send> IntoIterator for CachedThreadLocal<T> {
+    type Item = Box<T>;
+    type IntoIter = CachedIntoIter<T>;
+
+    fn into_iter(self) -> CachedIntoIter<T> {
+        unsafe { (*self.local.get()).take().into_iter().chain(self.global.into_iter()) }
+    }
+}
+
+impl<'a, T: ?Sized + Send + 'a> IntoIterator for &'a mut CachedThreadLocal<T> {
+    type Item = &'a mut Box<T>;
+    type IntoIter = CachedIterMut<'a, T>;
+
+    fn into_iter(self) -> CachedIterMut<'a, T> {
+        self.iter_mut()
+    }
 }
 
 impl<T: Send + Default> CachedThreadLocal<T> {
@@ -386,9 +580,15 @@ impl<T: Send + Default> CachedThreadLocal<T> {
 
 impl<T: ?Sized + Send + fmt::Debug> fmt::Debug for CachedThreadLocal<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ThreadLocal {{ data: {:?} }}", self.get())
+        write!(f, "ThreadLocal {{ local_data: {:?} }}", self.get())
     }
 }
+
+/// Mutable iterator over the contents of a `CachedThreadLocal`.
+pub type CachedIterMut<'a, T> = Chain<OptionIter<&'a mut Box<T>>, IterMut<'a, T>>;
+
+/// An iterator that moves out of a `CachedThreadLocal`.
+pub type CachedIntoIter<T> = Chain<OptionIter<Box<T>>, IntoIter<T>>;
 
 #[cfg(test)]
 mod tests {
@@ -407,31 +607,35 @@ mod tests {
     #[test]
     fn same_thread() {
         let create = make_create();
-        let tls = ThreadLocal::new();
+        let mut tls = ThreadLocal::new();
         assert_eq!(None, tls.get());
-        assert_eq!("ThreadLocal { data: None }", format!("{:?}", &tls));
+        assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
-        assert_eq!("ThreadLocal { data: Some(0) }", format!("{:?}", &tls));
+        assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
+        tls.clear();
+        assert_eq!(None, tls.get());
     }
 
     #[test]
     fn same_thread_cached() {
         let create = make_create();
-        let tls = CachedThreadLocal::new();
+        let mut tls = CachedThreadLocal::new();
         assert_eq!(None, tls.get());
-        assert_eq!("ThreadLocal { data: None }", format!("{:?}", &tls));
+        assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
-        assert_eq!("ThreadLocal { data: Some(0) }", format!("{:?}", &tls));
+        assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
+        tls.clear();
+        assert_eq!(None, tls.get());
     }
 
     #[test]
@@ -445,10 +649,10 @@ mod tests {
         let tls2 = tls.clone();
         let create2 = create.clone();
         thread::spawn(move || {
-            assert_eq!(None, tls2.get());
-            assert_eq!(1, *tls2.get_or(|| create2()));
-            assert_eq!(Some(&1), tls2.get());
-        })
+                assert_eq!(None, tls2.get());
+                assert_eq!(1, *tls2.get_or(|| create2()));
+                assert_eq!(Some(&1), tls2.get());
+            })
             .join()
             .unwrap();
 
@@ -467,15 +671,69 @@ mod tests {
         let tls2 = tls.clone();
         let create2 = create.clone();
         thread::spawn(move || {
-            assert_eq!(None, tls2.get());
-            assert_eq!(1, *tls2.get_or(|| create2()));
-            assert_eq!(Some(&1), tls2.get());
-        })
+                assert_eq!(None, tls2.get());
+                assert_eq!(1, *tls2.get_or(|| create2()));
+                assert_eq!(Some(&1), tls2.get());
+            })
             .join()
             .unwrap();
 
         assert_eq!(Some(&0), tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
+    }
+
+    #[test]
+    fn iter() {
+        let tls = Arc::new(ThreadLocal::new());
+        tls.get_or(|| Box::new(1));
+
+        let tls2 = tls.clone();
+        thread::spawn(move || {
+                tls2.get_or(|| Box::new(2));
+                let tls3 = tls2.clone();
+                thread::spawn(move || {
+                        tls3.get_or(|| Box::new(3));
+                    })
+                    .join()
+                    .unwrap();
+            })
+            .join()
+            .unwrap();
+
+        let mut tls = Arc::try_unwrap(tls).unwrap();
+        let mut v = tls.iter_mut().map(|x| **x).collect::<Vec<i32>>();
+        v.sort();
+        assert_eq!(vec![1, 2, 3], v);
+        let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
+        v.sort();
+        assert_eq!(vec![1, 2, 3], v);
+    }
+
+    #[test]
+    fn iter_cached() {
+        let tls = Arc::new(CachedThreadLocal::new());
+        tls.get_or(|| Box::new(1));
+
+        let tls2 = tls.clone();
+        thread::spawn(move || {
+                tls2.get_or(|| Box::new(2));
+                let tls3 = tls2.clone();
+                thread::spawn(move || {
+                        tls3.get_or(|| Box::new(3));
+                    })
+                    .join()
+                    .unwrap();
+            })
+            .join()
+            .unwrap();
+
+        let mut tls = Arc::try_unwrap(tls).unwrap();
+        let mut v = tls.iter_mut().map(|x| **x).collect::<Vec<i32>>();
+        v.sort();
+        assert_eq!(vec![1, 2, 3], v);
+        let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
+        v.sort();
+        assert_eq!(vec![1, 2, 3], v);
     }
 
     #[test]
