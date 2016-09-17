@@ -85,16 +85,24 @@ use std::option::IntoIter as OptionIter;
 trait UncheckedOptionExt<T> {
     unsafe fn unchecked_unwrap(self) -> T;
 }
+#[inline]
+unsafe fn unreachable() -> ! {
+    enum Void {}
+    match *(1 as *const Void) {}
+}
 impl<T> UncheckedOptionExt<T> for Option<T> {
     unsafe fn unchecked_unwrap(self) -> T {
-        #[inline]
-        unsafe fn unreachable() -> ! {
-            enum Void {}
-            match *(1 as *const Void) {}
-        }
         match self {
             Some(x) => x,
             None => unreachable(),
+        }
+    }
+}
+impl<T, E> UncheckedOptionExt<T> for Result<T, E> {
+    unsafe fn unchecked_unwrap(self) -> T {
+        match self {
+            Ok(x) => x,
+            Err(_) => unreachable(),
         }
     }
 }
@@ -220,10 +228,19 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
+        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap() }
+    }
+
+    /// Returns the element for the current thread, or creates it if it doesn't
+    /// exist. If `create` fails, that error is returned and no element is
+    /// added.
+    pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
+        where F: FnOnce() -> Result<Box<T>, E>
+    {
         let id = thread_id::get();
         match self.get_fast(id) {
-            Some(x) => x,
-            None => self.insert(id, create(), true),
+            Some(x) => Ok(x),
+            None => Ok(self.insert(id, try!(create()), true)),
         }
     }
 
@@ -507,28 +524,37 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
+        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap() }
+    }
+
+    /// Returns the element for the current thread, or creates it if it doesn't
+    /// exist. If `create` fails, that error is returned and no element is
+    /// added.
+    pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
+        where F: FnOnce() -> Result<Box<T>, E>
+    {
         let id = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
-            return unsafe { (*self.local.get()).as_ref().unchecked_unwrap() };
+            return Ok(unsafe { (*self.local.get()).as_ref().unchecked_unwrap() });
         }
-        self.get_or_slow(id, owner, create)
+        self.get_or_try_slow(id, owner, create)
     }
 
     #[cold]
     #[inline(never)]
-    fn get_or_slow<F>(&self, id: usize, owner: usize, create: F) -> &T
-        where F: FnOnce() -> Box<T>
+    fn get_or_try_slow<F, E>(&self, id: usize, owner: usize, create: F) -> Result<&T, E>
+        where F: FnOnce() -> Result<Box<T>, E>
     {
         if owner == 0 && self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
             unsafe {
-                (*self.local.get()) = Some(create());
-                return (*self.local.get()).as_ref().unchecked_unwrap();
+                (*self.local.get()) = Some(try!(create()));
+                return Ok((*self.local.get()).as_ref().unchecked_unwrap());
             }
         }
         match self.global.get_fast(id) {
-            Some(x) => x,
-            None => self.global.insert(id, create(), true),
+            Some(x) => Ok(x),
+            None => Ok(self.global.insert(id, try!(create()), true)),
         }
     }
 
