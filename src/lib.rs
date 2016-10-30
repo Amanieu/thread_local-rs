@@ -71,57 +71,16 @@
 #![warn(missing_docs)]
 
 extern crate thread_id;
+extern crate unreachable;
 
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::marker::PhantomData;
 use std::cell::UnsafeCell;
-use std::mem;
 use std::fmt;
 use std::iter::Chain;
 use std::option::IntoIter as OptionIter;
-
-// Option::unchecked_unwrap
-trait UncheckedOptionExt<T> {
-    unsafe fn unchecked_unwrap(self) -> T;
-}
-#[inline]
-unsafe fn unreachable() -> ! {
-    enum Void {}
-    match *(1 as *const Void) {}
-}
-impl<T> UncheckedOptionExt<T> for Option<T> {
-    unsafe fn unchecked_unwrap(self) -> T {
-        match self {
-            Some(x) => x,
-            None => unreachable(),
-        }
-    }
-}
-impl<T, E> UncheckedOptionExt<T> for Result<T, E> {
-    unsafe fn unchecked_unwrap(self) -> T {
-        match self {
-            Ok(x) => x,
-            Err(_) => unreachable(),
-        }
-    }
-}
-
-// BoxExt::{from_raw,into_raw}
-trait BoxExt<T: ?Sized> {
-    fn into_raw(b: Self) -> *mut T;
-    unsafe fn from_raw(raw: *mut T) -> Self;
-}
-impl<T: ?Sized> BoxExt<T> for Box<T> {
-    fn into_raw(mut b: Self) -> *mut T {
-        let ptr: *mut T = &mut *b;
-        mem::forget(b);
-        ptr
-    }
-    unsafe fn from_raw(raw: *mut T) -> Self {
-        mem::transmute(raw)
-    }
-}
+use unreachable::{UncheckedOptionExt, UncheckedResultExt};
 
 /// Thread-local variable wrapper
 ///
@@ -171,7 +130,7 @@ impl<T: ?Sized + Send> Default for ThreadLocal<T> {
 impl<T: ?Sized + Send> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
         unsafe {
-            let _: Box<Table<T>> = BoxExt::from_raw(self.table.load(Ordering::Relaxed));
+            Box::from_raw(self.table.load(Ordering::Relaxed));
         }
     }
 }
@@ -211,7 +170,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
             prev: None,
         };
         ThreadLocal {
-            table: AtomicPtr::new(BoxExt::into_raw(Box::new(table))),
+            table: AtomicPtr::new(Box::into_raw(Box::new(table))),
             lock: Mutex::new(0),
             marker: PhantomData,
         }
@@ -228,7 +187,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
-        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap() }
+        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap_ok() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -305,10 +264,10 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
                 owner: AtomicUsize::new(0),
                 data: UnsafeCell::new(None),
             };
-            let new_table = BoxExt::into_raw(Box::new(Table {
+            let new_table = Box::into_raw(Box::new(Table {
                 entries: vec![entry; table.entries.len() * 2].into_boxed_slice(),
                 hash_bits: table.hash_bits + 1,
-                prev: unsafe { Some(BoxExt::from_raw(table_raw)) },
+                prev: unsafe { Some(Box::from_raw(table_raw)) },
             }));
             self.table.store(new_table, Ordering::Release);
             unsafe { &*new_table }
@@ -524,7 +483,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     pub fn get_or<F>(&self, create: F) -> &T
         where F: FnOnce() -> Box<T>
     {
-        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap() }
+        unsafe { self.get_or_try(|| Ok::<Box<T>, ()>(create())).unchecked_unwrap_ok() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
