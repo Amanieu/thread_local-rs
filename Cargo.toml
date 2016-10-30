@@ -10,4 +10,4 @@ readme = "README.md"
 keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
-thread-id = "2.0"
+thread-id = "3.0"
