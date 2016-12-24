@@ -70,6 +70,7 @@
 
 #![warn(missing_docs)]
 
+#[cfg(not(target_os = "emscripten"))]
 extern crate thread_id;
 extern crate unreachable;
 
@@ -145,6 +146,21 @@ impl<T: ?Sized + Send> Clone for TableEntry<T> {
     }
 }
 
+// Helper function to get a thread id
+#[cfg(not(target_os = "emscripten"))]
+fn get_thread_id() -> usize {
+    thread_id::get()
+}
+#[cfg(target_os = "emscripten")]
+fn get_thread_id() -> usize {
+    // pthread_self returns 0 on enscripten, but we use that as a
+    // reserved value to indicate an empty slot. We instead fall
+    // back to using the address of a thread-local variable, which
+    // is slightly slower but guaranteed to produce a non-zero value.
+    thread_local!(static KEY: u8 = unsafe { mem::uninitialized() });
+    KEY.with(|x| x as *const _ as usize)
+}
+
 // Hash function for the thread id
 #[cfg(target_pointer_width = "32")]
 #[inline]
@@ -178,7 +194,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get();
+        let id = get_thread_id();
         self.get_fast(id)
     }
 
@@ -196,7 +212,7 @@ impl<T: ?Sized + Send> ThreadLocal<T> {
     pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
         where F: FnOnce() -> Result<Box<T>, E>
     {
-        let id = thread_id::get();
+        let id = get_thread_id();
         match self.get_fast(id) {
             Some(x) => Ok(x),
             None => Ok(self.insert(id, try!(create()), true)),
@@ -466,7 +482,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get();
+        let id = get_thread_id();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
@@ -492,7 +508,7 @@ impl<T: ?Sized + Send> CachedThreadLocal<T> {
     pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
         where F: FnOnce() -> Result<Box<T>, E>
     {
-        let id = thread_id::get();
+        let id = get_thread_id();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return Ok(unsafe { (*self.local.get()).as_ref().unchecked_unwrap() });
