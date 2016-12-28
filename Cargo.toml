@@ -1,6 +1,6 @@
 [package]
 name = "thread_local"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 description = "Per-object thread-local storage"
 documentation = "https://amanieu.github.io/thread_local-rs/thread_local/index.html"
