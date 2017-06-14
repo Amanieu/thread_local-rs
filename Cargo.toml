@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
-unreachable = "0.1"
+unreachable = "1.0"
 
 [target.'cfg(not(target_os = "emscripten"))'.dependencies]
 thread-id = "3.0"
