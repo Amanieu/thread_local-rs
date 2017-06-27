@@ -11,6 +11,4 @@ keywords = ["thread_local", "concurrent", "thread"]
 
 [dependencies]
 unreachable = "1.0"
-
-[target.'cfg(not(target_os = "emscripten"))'.dependencies]
-thread-id = "3.0"
+lazy_static = "0.2"
