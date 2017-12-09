@@ -1,6 +1,6 @@
 [package]
 name = "thread_local"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 description = "Per-object thread-local storage"
 documentation = "https://amanieu.github.io/thread_local-rs/thread_local/index.html"
@@ -14,4 +14,4 @@ travis-ci = { repository = "Amanieu/thread_local-rs" }
 
 [dependencies]
 unreachable = "1.0"
-lazy_static = "1"
+lazy_static = "1.0"
