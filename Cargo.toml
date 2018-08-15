@@ -13,6 +13,4 @@ keywords = ["thread_local", "concurrent", "thread"]
 travis-ci = { repository = "Amanieu/thread_local-rs" }
 
 [dependencies]
-unreachable = "1.0"
-void = "1.0.2" # required only for minimal-versions. brought in by unreachable.
 lazy_static = "1.0"
