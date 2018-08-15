@@ -13,5 +13,4 @@ keywords = ["thread_local", "concurrent", "thread"]
 travis-ci = { repository = "Amanieu/thread_local-rs" }
 
 [dependencies]
-unreachable = "1.0"
 lazy_static = "1.0"
