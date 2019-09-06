@@ -364,7 +364,7 @@ impl<'a, T: ?Sized + Send + 'a> IntoIterator for &'a mut ThreadLocal<T> {
 impl<T: Send + Default> ThreadLocal<T> {
     /// Returns the element for the current thread, or creates a default one if
     /// it doesn't exist.
-    pub fn get_default(&self) -> &T {
+    pub fn get_or_default(&self) -> &T {
         self.get_or(|| Box::new(T::default()))
     }
 }
@@ -589,7 +589,7 @@ impl<'a, T: ?Sized + Send + 'a> IntoIterator for &'a mut CachedThreadLocal<T> {
 impl<T: Send + Default> CachedThreadLocal<T> {
     /// Returns the element for the current thread, or creates a default one if
     /// it doesn't exist.
-    pub fn get_default(&self) -> &T {
+    pub fn get_or_default(&self) -> &T {
         self.get_or(|| Box::new(T::default()))
     }
 }
