@@ -463,7 +463,7 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn make_create() -> Arc<Fn() -> usize + Send + Sync> {
+    fn make_create() -> Arc<dyn Fn() -> usize + Send + Sync> {
         let count = AtomicUsize::new(0);
         Arc::new(move || count.fetch_add(1, Relaxed))
     }
