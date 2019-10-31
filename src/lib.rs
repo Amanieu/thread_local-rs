@@ -98,9 +98,6 @@ pub struct ThreadLocal<T: Send> {
     // while writing to the table, not when reading from it. This also guards
     // the counter for the total number of values in the hash table.
     lock: Mutex<usize>,
-
-    // PhantomData to indicate that we logically own T
-    marker: PhantomData<T>,
 }
 
 struct Table<T: Send> {
@@ -177,7 +174,6 @@ impl<T: Send> ThreadLocal<T> {
         ThreadLocal {
             table: AtomicPtr::new(Box::into_raw(Box::new(table))),
             lock: Mutex::new(0),
-            marker: PhantomData,
         }
     }
 
@@ -209,7 +205,7 @@ impl<T: Send> ThreadLocal<T> {
         let id = thread_id::get();
         match self.get_fast(id) {
             Some(x) => Ok(x),
-            None => Ok(self.insert(id, Box::new(try!(create())), true)),
+            None => Ok(self.insert(id, Box::new(create()?), true)),
         }
     }
 
