@@ -85,13 +85,13 @@ impl<T: Send> CachedThreadLocal<T> {
     {
         if owner == 0 && self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
             unsafe {
-                (*self.local.get()) = Some(Box::new(try!(create())));
+                (*self.local.get()) = Some(Box::new(create()?));
                 return Ok((*self.local.get()).as_ref().unchecked_unwrap());
             }
         }
         match self.global.get_fast(id) {
             Some(x) => Ok(x),
-            None => Ok(self.global.insert(id, Box::new(try!(create())), true)),
+            None => Ok(self.global.insert(id, Box::new(create()?), true)),
         }
     }
 
