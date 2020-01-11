@@ -229,7 +229,7 @@ impl<T: Send> ThreadLocal<T> {
 
     // Fast path: try to find our thread in the top-level hash table
     fn get_fast(&self, id: usize) -> Option<&T> {
-        let table = unsafe { &*self.table.load(Ordering::Relaxed) };
+        let table = unsafe { &*self.table.load(Ordering::Acquire) };
         match Self::lookup(id, table) {
             Some(x) => unsafe { Some((*x.get()).as_ref().unchecked_unwrap()) },
             None => self.get_slow(id, table),
