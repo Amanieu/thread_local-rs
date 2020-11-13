@@ -67,15 +67,12 @@
 //! let total = tls.into_iter().fold(0, |x, y| x + y.get());
 //! assert_eq!(total, 5);
 //! ```
-
 #![warn(missing_docs)]
+#![allow(clippy::mutex_atomic)]
 
-#[macro_use]
-extern crate lazy_static;
-
+mod cached;
 mod thread_id;
 mod unreachable;
-mod cached;
 
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
@@ -556,16 +553,17 @@ mod tests {
             })
             .join()
             .unwrap();
+            drop(tls2);
         })
         .join()
         .unwrap();
 
         let mut tls = Arc::try_unwrap(tls).unwrap();
         let mut v = tls.iter_mut().map(|x| **x).collect::<Vec<i32>>();
-        v.sort();
+        v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
         let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
-        v.sort();
+        v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
     }
 
@@ -583,16 +581,17 @@ mod tests {
             })
             .join()
             .unwrap();
+            drop(tls2);
         })
         .join()
         .unwrap();
 
         let mut tls = Arc::try_unwrap(tls).unwrap();
         let mut v = tls.iter_mut().map(|x| **x).collect::<Vec<i32>>();
-        v.sort();
+        v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
         let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
-        v.sort();
+        v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
     }
 
