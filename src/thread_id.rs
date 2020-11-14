@@ -5,43 +5,40 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use once_cell::sync::Lazy;
-use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
+use std::usize;
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
 /// indefinitely when it is used by many short-lived threads.
 struct ThreadIdManager {
-    free_after: usize,
-    free_list: BinaryHeap<Reverse<usize>>,
+    limit: usize,
+    free_list: BinaryHeap<usize>,
 }
 impl ThreadIdManager {
     fn new() -> ThreadIdManager {
         ThreadIdManager {
-            free_after: 1,
+            limit: usize::MAX,
             free_list: BinaryHeap::new(),
         }
     }
     fn alloc(&mut self) -> usize {
         if let Some(id) = self.free_list.pop() {
-            id.0
+            id
         } else {
-            let id = self.free_after;
-            self.free_after = self
-                .free_after
-                .checked_add(1)
-                .expect("Ran out of thread IDs");
+            let id = self.limit;
+            self.limit = self.limit.checked_sub(1).expect("Ran out of thread IDs");
             id
         }
     }
     fn free(&mut self, id: usize) {
-        self.free_list.push(Reverse(id));
+        self.free_list.push(id);
     }
 }
-static THREAD_ID_MANAGER: Lazy<Mutex<ThreadIdManager>> =
-    Lazy::new(|| Mutex::new(ThreadIdManager::new()));
+lazy_static! {
+    static ref THREAD_ID_MANAGER: Mutex<ThreadIdManager> = Mutex::new(ThreadIdManager::new());
+}
 
 /// Non-zero integer which is unique to the current thread while it is running.
 /// A thread ID may be reused after a thread exits.

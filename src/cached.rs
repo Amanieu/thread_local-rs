@@ -1,9 +1,10 @@
 use super::{IntoIter, IterMut, ThreadLocal};
-use crate::unreachable::{UncheckedOptionExt, UncheckedResultExt};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::panic::UnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use thread_id;
+use unreachable::{UncheckedOptionExt, UncheckedResultExt};
 
 /// Wrapper around `ThreadLocal` which adds a fast path for a single thread.
 ///
@@ -37,7 +38,7 @@ impl<T: Send> CachedThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = crate::thread_id::get();
+        let id = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
@@ -68,7 +69,7 @@ impl<T: Send> CachedThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let id = crate::thread_id::get();
+        let id = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
         if owner == id {
             return Ok(unsafe { (*self.local.get()).as_ref().unchecked_unwrap() });
@@ -101,7 +102,7 @@ impl<T: Send> CachedThreadLocal<T> {
     /// threads are currently accessing their associated values.
     pub fn iter_mut(&mut self) -> CachedIterMut<T> {
         CachedIterMut {
-            local: unsafe { (*self.local.get()).as_deref_mut() },
+            local: unsafe { (*self.local.get()).as_mut().map(|x| &mut **x) },
             global: self.global.iter_mut(),
         }
     }

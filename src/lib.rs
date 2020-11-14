@@ -67,8 +67,12 @@
 //! let total = tls.into_iter().fold(0, |x, y| x + y.get());
 //! assert_eq!(total, 5);
 //! ```
+
 #![warn(missing_docs)]
 #![allow(clippy::mutex_atomic)]
+
+#[macro_use]
+extern crate lazy_static;
 
 mod cached;
 mod thread_id;

@@ -1,6 +1,7 @@
 #![feature(test)]
 
 extern crate test;
+extern crate thread_local;
 
 use thread_local::{CachedThreadLocal, ThreadLocal};
 
