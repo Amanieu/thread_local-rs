@@ -9,9 +9,9 @@ use std::collections::BinaryHeap;
 use std::sync::Mutex;
 use std::usize;
 
-// Thread ID manager which allocates thread IDs. It attempts to aggressively
-// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
-// indefinitely when it is used by many short-lived threads.
+/// Thread ID manager which allocates thread IDs. It attempts to aggressively
+/// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
+/// indefinitely when it is used by many short-lived threads.
 struct ThreadIdManager {
     limit: usize,
     free_list: BinaryHeap<usize>,
@@ -40,8 +40,8 @@ lazy_static! {
     static ref THREAD_ID_MANAGER: Mutex<ThreadIdManager> = Mutex::new(ThreadIdManager::new());
 }
 
-// Non-zero integer which is unique to the current thread while it is running.
-// A thread ID may be reused after a thread exits.
+/// Non-zero integer which is unique to the current thread while it is running.
+/// A thread ID may be reused after a thread exits.
 struct ThreadId(usize);
 impl ThreadId {
     fn new() -> ThreadId {
@@ -56,6 +56,6 @@ impl Drop for ThreadId {
 thread_local!(static THREAD_ID: ThreadId = ThreadId::new());
 
 /// Returns a non-zero ID for the current thread
-pub fn get() -> usize {
+pub(crate) fn get() -> usize {
     THREAD_ID.with(|x| x.0)
 }

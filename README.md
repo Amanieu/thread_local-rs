@@ -25,6 +25,10 @@ and this to your crate root:
 extern crate thread_local;
 ```
 
+## Minimum Rust version
+
+This crate's minimum supported Rust version (MSRV) is 1.28.0.
+
 ## License
 
 Licensed under either of
