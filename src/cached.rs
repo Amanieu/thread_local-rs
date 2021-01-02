@@ -3,6 +3,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::panic::UnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::usize;
 use thread_id;
 use unreachable::{UncheckedOptionExt, UncheckedResultExt};
 
@@ -30,7 +31,7 @@ impl<T: Send> CachedThreadLocal<T> {
     /// Creates a new empty `CachedThreadLocal`.
     pub fn new() -> CachedThreadLocal<T> {
         CachedThreadLocal {
-            owner: AtomicUsize::new(0),
+            owner: AtomicUsize::new(usize::MAX),
             local: UnsafeCell::new(None),
             global: ThreadLocal::new(),
         }
@@ -43,7 +44,7 @@ impl<T: Send> CachedThreadLocal<T> {
         if owner == id {
             return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
         }
-        if owner == 0 {
+        if owner == usize::MAX {
             return None;
         }
         self.global.get_fast(id)
@@ -83,7 +84,12 @@ impl<T: Send> CachedThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        if owner == 0 && self.owner.compare_and_swap(0, id, Ordering::Relaxed) == 0 {
+        if owner == usize::MAX
+            && self
+                .owner
+                .compare_and_swap(usize::MAX, id, Ordering::Relaxed)
+                == usize::MAX
+        {
             unsafe {
                 (*self.local.get()) = Some(Box::new(create()?));
                 return Ok((*self.local.get()).as_ref().unchecked_unwrap());
@@ -91,7 +97,7 @@ impl<T: Send> CachedThreadLocal<T> {
         }
         match self.global.get_fast(id) {
             Some(x) => Ok(x),
-            None => Ok(self.global.insert(id, Box::new(create()?), true)),
+            None => Ok(self.global.insert(id, create()?, true)),
         }
     }
 
