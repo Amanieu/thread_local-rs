@@ -84,6 +84,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::UnwindSafe;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 use unreachable::{UncheckedOptionExt, UncheckedResultExt};
@@ -111,13 +112,13 @@ struct List<T: Send> {
     //
     // This cannot be a Box as that would result in the Box's pointer
     // potentially being aliased when creating a new list, which is UB.
-    prev: Option<*mut List<T>>,
+    prev: Option<NonNull<List<T>>>,
 }
 
 impl<T: Send> Drop for List<T> {
     fn drop(&mut self) {
         if let Some(prev) = self.prev.take() {
-            drop(unsafe { Box::from_raw(prev) });
+            drop(unsafe { Box::from_raw(prev.as_ptr()) });
         }
     }
 }
@@ -208,7 +209,7 @@ impl<T: Send> ThreadLocal<T> {
     fn get_slow(&self, id: usize, list_top: &List<T>) -> Option<&T> {
         let mut current = list_top.prev;
         while let Some(list) = current {
-            let list = unsafe { &*list };
+            let list = unsafe { list.as_ref() };
 
             match list.values.get(id) {
                 Some(value) => {
@@ -246,7 +247,7 @@ impl<T: Send> ThreadLocal<T> {
                     .map(|_| UnsafeCell::new(None))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
-                prev: Some(list_raw),
+                prev: Some(unsafe { NonNull::new_unchecked(list_raw) }),
             }));
             self.list.store(new_list, Ordering::Release);
             unsafe { &*new_list }
@@ -360,7 +361,7 @@ impl<T: Send> Iterator for RawIter<T> {
                 }
             }
             self.index = 0;
-            self.list = unsafe { &**(*self.list).prev.as_ref().unchecked_unwrap() };
+            self.list = unsafe { (*self.list).prev.as_ref().unchecked_unwrap().as_ref() };
         }
     }
 
