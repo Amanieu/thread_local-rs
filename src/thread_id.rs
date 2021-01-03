@@ -5,6 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
 use std::usize;
@@ -14,7 +15,7 @@ use std::usize;
 /// indefinitely when it is used by many short-lived threads.
 struct ThreadIdManager {
     free_from: usize,
-    free_list: BinaryHeap<usize>,
+    free_list: BinaryHeap<Reverse<usize>>,
 }
 impl ThreadIdManager {
     fn new() -> ThreadIdManager {
@@ -25,7 +26,7 @@ impl ThreadIdManager {
     }
     fn alloc(&mut self) -> usize {
         if let Some(id) = self.free_list.pop() {
-            id
+            id.0
         } else {
             let id = self.free_from;
             self.free_from = self
@@ -36,7 +37,7 @@ impl ThreadIdManager {
         }
     }
     fn free(&mut self, id: usize) {
-        self.free_list.push(id);
+        self.free_list.push(Reverse(id));
     }
 }
 lazy_static! {
