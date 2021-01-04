@@ -9,6 +9,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
 use std::usize;
+use POINTER_WIDTH;
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
@@ -44,22 +45,83 @@ lazy_static! {
     static ref THREAD_ID_MANAGER: Mutex<ThreadIdManager> = Mutex::new(ThreadIdManager::new());
 }
 
-/// Non-zero integer which is unique to the current thread while it is running.
+/// Data which is unique to the current thread while it is running.
 /// A thread ID may be reused after a thread exits.
-struct ThreadId(usize);
-impl ThreadId {
-    fn new() -> ThreadId {
-        ThreadId(THREAD_ID_MANAGER.lock().unwrap().alloc())
-    }
+#[derive(Clone, Copy)]
+pub(crate) struct Thread {
+    /// The thread ID obtained from the thread ID manager.
+    pub(crate) id: usize,
+    /// The bucket this thread's local storage will be in.
+    pub(crate) bucket: usize,
+    /// The size of the bucket this thread's local storage will be in.
+    pub(crate) bucket_size: usize,
+    /// The index into the bucket this thread's local storage is in.
+    pub(crate) index: usize,
 }
-impl Drop for ThreadId {
-    fn drop(&mut self) {
-        THREAD_ID_MANAGER.lock().unwrap().free(self.0);
-    }
-}
-thread_local!(static THREAD_ID: ThreadId = ThreadId::new());
+impl Thread {
+    fn new(id: usize) -> Thread {
+        let bucket = usize::from(POINTER_WIDTH) - id.leading_zeros() as usize;
+        let bucket_size = 1 << bucket.saturating_sub(1);
+        let index = if id != 0 { id ^ bucket_size } else { 0 };
 
-/// Returns a non-zero ID for the current thread
-pub(crate) fn get() -> usize {
-    THREAD_ID.with(|x| x.0)
+        Thread {
+            id,
+            bucket,
+            bucket_size,
+            index,
+        }
+    }
+}
+
+/// Wrapper around `Thread` that allocates and deallocates the ID.
+struct ThreadHolder(Thread);
+impl ThreadHolder {
+    fn new() -> ThreadHolder {
+        ThreadHolder(Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc()))
+    }
+}
+impl Drop for ThreadHolder {
+    fn drop(&mut self) {
+        THREAD_ID_MANAGER.lock().unwrap().free(self.0.id);
+    }
+}
+
+thread_local!(static THREAD_HOLDER: ThreadHolder = ThreadHolder::new());
+
+/// Get the current thread.
+pub(crate) fn get() -> Thread {
+    THREAD_HOLDER.with(|holder| holder.0)
+}
+
+#[test]
+fn test_thread() {
+    let thread = Thread::new(0);
+    assert_eq!(thread.id, 0);
+    assert_eq!(thread.bucket, 0);
+    assert_eq!(thread.bucket_size, 1);
+    assert_eq!(thread.index, 0);
+
+    let thread = Thread::new(1);
+    assert_eq!(thread.id, 1);
+    assert_eq!(thread.bucket, 1);
+    assert_eq!(thread.bucket_size, 1);
+    assert_eq!(thread.index, 0);
+
+    let thread = Thread::new(2);
+    assert_eq!(thread.id, 2);
+    assert_eq!(thread.bucket, 2);
+    assert_eq!(thread.bucket_size, 2);
+    assert_eq!(thread.index, 0);
+
+    let thread = Thread::new(3);
+    assert_eq!(thread.id, 3);
+    assert_eq!(thread.bucket, 2);
+    assert_eq!(thread.bucket_size, 2);
+    assert_eq!(thread.index, 1);
+
+    let thread = Thread::new(19);
+    assert_eq!(thread.id, 19);
+    assert_eq!(thread.bucket, 5);
+    assert_eq!(thread.bucket_size, 16);
+    assert_eq!(thread.index, 3);
 }

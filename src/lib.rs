@@ -83,44 +83,37 @@ pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::marker::PhantomData;
+use std::mem;
 use std::panic::UnwindSafe;
-use std::ptr::NonNull;
+use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
+use thread_id::Thread;
 use unreachable::{UncheckedOptionExt, UncheckedResultExt};
+
+#[cfg(target_pointer_width = "16")]
+const POINTER_WIDTH: u8 = 16;
+#[cfg(target_pointer_width = "32")]
+const POINTER_WIDTH: u8 = 32;
+#[cfg(target_pointer_width = "64")]
+const POINTER_WIDTH: u8 = 64;
+
+/// The total number of buckets stored in each thread local.
+const BUCKETS: usize = (POINTER_WIDTH + 1) as usize;
 
 /// Thread-local variable wrapper
 ///
 /// See the [module-level documentation](index.html) for more.
 pub struct ThreadLocal<T: Send> {
-    // Pointer to the current top-level list
-    list: AtomicPtr<List<T>>,
+    /// The buckets in the thread local. The nth bucket contains `2^(n-1)`
+    /// elements. Each bucket is lazily allocated.
+    buckets: [AtomicPtr<UnsafeCell<Option<T>>>; BUCKETS],
 
-    // Lock used to guard against concurrent modifications. This is only taken
-    // while writing to the list, not when reading from it. This also guards
-    // the counter for the total number of values in the thread local.
+    /// Lock used to guard against concurrent modifications. This is taken when
+    /// there is a possibility of allocating a new bucket, which only occurs
+    /// when inserting values. This also guards the counter for the total number
+    /// of values in the thread local.
     lock: Mutex<usize>,
-}
-
-/// A list of thread-local values.
-struct List<T: Send> {
-    // The thread local values in this list. If any values is `None`, it is
-    // either in an earlier list or it is uninitialized.
-    values: Box<[UnsafeCell<Option<T>>]>,
-
-    // Previous list, half the size of the current one
-    //
-    // This cannot be a Box as that would result in the Box's pointer
-    // potentially being aliased when creating a new list, which is UB.
-    prev: Option<NonNull<List<T>>>,
-}
-
-impl<T: Send> Drop for List<T> {
-    fn drop(&mut self) {
-        if let Some(prev) = self.prev.take() {
-            drop(unsafe { Box::from_raw(prev.as_ptr()) });
-        }
-    }
 }
 
 // ThreadLocal is always Sync, even if T isn't
@@ -134,8 +127,22 @@ impl<T: Send> Default for ThreadLocal<T> {
 
 impl<T: Send> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
-        unsafe {
-            Box::from_raw(*self.list.get_mut());
+        let mut bucket_size = 1;
+
+        // Free each non-null bucket
+        for (i, bucket) in self.buckets.iter_mut().enumerate() {
+            let bucket_ptr = *bucket.get_mut();
+
+            let this_bucket_size = bucket_size;
+            if i != 0 {
+                bucket_size <<= 1;
+            }
+
+            if bucket_ptr.is_null() {
+                continue;
+            }
+
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(bucket_ptr, this_bucket_size)) };
         }
     }
 }
@@ -143,29 +150,40 @@ impl<T: Send> Drop for ThreadLocal<T> {
 impl<T: Send> ThreadLocal<T> {
     /// Creates a new empty `ThreadLocal`.
     pub fn new() -> ThreadLocal<T> {
-        ThreadLocal::with_capacity(2)
+        Self::with_capacity(2)
     }
 
     /// Creates a new `ThreadLocal` with an initial capacity. If less than the capacity threads
-    /// access the thread local it will never reallocate.
+    /// access the thread local it will never reallocate. The capacity may be rounded up to the
+    /// nearest power of two.
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
-        let list = List {
-            values: (0..capacity)
-                .map(|_| UnsafeCell::new(None))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            prev: None,
-        };
+        let allocated_buckets = capacity
+            .checked_sub(1)
+            .map(|c| usize::from(POINTER_WIDTH) - (c.leading_zeros() as usize) + 1)
+            .unwrap_or(0);
+
+        let mut buckets = [ptr::null_mut(); BUCKETS];
+        let mut bucket_size = 1;
+        for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
+            *bucket = allocate_bucket::<T>(bucket_size);
+
+            if i != 0 {
+                bucket_size <<= 1;
+            }
+        }
+
         ThreadLocal {
-            list: AtomicPtr::new(Box::into_raw(Box::new(list))),
+            // Safety: AtomicPtr has the same representation as a pointer and arrays have the same
+            // representation as a sequence of their inner type.
+            buckets: unsafe { mem::transmute(buckets) },
             lock: Mutex::new(0),
         }
     }
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get();
-        self.get_fast(id)
+        let thread = thread_id::get();
+        self.get_inner(thread)
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -187,80 +205,45 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let id = thread_id::get();
-        match self.get_fast(id) {
+        let thread = thread_id::get();
+        match self.get_inner(thread) {
             Some(x) => Ok(x),
-            None => Ok(self.insert(id, create()?, true)),
+            None => Ok(self.insert(thread, create()?)),
         }
     }
 
-    // Fast path: try to find our thread in the top-level list
-    fn get_fast(&self, id: usize) -> Option<&T> {
-        let list = unsafe { &*self.list.load(Ordering::Acquire) };
-        list.values
-            .get(id)
-            .and_then(|cell| unsafe { &*cell.get() }.as_ref())
-            .or_else(|| self.get_slow(id, list))
-    }
-
-    // Slow path: try to find our thread in the other lists, and then move it to
-    // the top-level list.
-    #[cold]
-    fn get_slow(&self, id: usize, list_top: &List<T>) -> Option<&T> {
-        let mut current = list_top.prev;
-        while let Some(list) = current {
-            let list = unsafe { list.as_ref() };
-
-            match list.values.get(id) {
-                Some(value) => {
-                    let value_option = unsafe { &mut *value.get() };
-                    if value_option.is_some() {
-                        let value = unsafe { value_option.take().unchecked_unwrap() };
-                        return Some(self.insert(id, value, false));
-                    }
-                }
-                None => break,
-            }
-            current = list.prev;
+    fn get_inner(&self, thread: Thread) -> Option<&T> {
+        let bucket_ptr =
+            unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
+        if bucket_ptr.is_null() {
+            return None;
         }
-        None
+        unsafe { (&*(&*bucket_ptr.add(thread.index)).get()).as_ref() }
     }
 
     #[cold]
-    fn insert(&self, id: usize, data: T, new: bool) -> &T {
-        let list_raw = self.list.load(Ordering::Relaxed);
-        let list = unsafe { &*list_raw };
-
-        // Lock the Mutex to ensure only a single thread is adding new lists at
-        // once
+    fn insert(&self, thread: Thread, data: T) -> &T {
+        // Lock the Mutex to ensure only a single thread is allocating buckets at once
         let mut count = self.lock.lock().unwrap();
-        if new {
-            *count += 1;
-        }
+        *count += 1;
 
-        // If there isn't space for this thread's local, add a new list.
-        let list = if id >= list.values.len() {
-            let new_list = Box::into_raw(Box::new(List {
-                values: (0..std::cmp::max(list.values.len() * 2, id + 1))
-                    // Values will be lazily moved into the top-level list, so
-                    // it starts out empty
-                    .map(|_| UnsafeCell::new(None))
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-                prev: Some(unsafe { NonNull::new_unchecked(list_raw) }),
-            }));
-            self.list.store(new_list, Ordering::Release);
-            unsafe { &*new_list }
+        let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
+
+        let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
+        let bucket_ptr = if bucket_ptr.is_null() {
+            // Allocate a new bucket
+            let bucket_ptr = allocate_bucket(thread.bucket_size);
+            bucket_atomic_ptr.store(bucket_ptr, Ordering::Release);
+            bucket_ptr
         } else {
-            list
+            bucket_ptr
         };
 
-        // We are no longer adding new lists, so we don't need the guard
         drop(count);
 
-        // Insert the new element into the top-level list
+        // Insert the new element into the bucket
         unsafe {
-            let value_ptr = list.values.get_unchecked(id).get();
+            let value_ptr = (&*bucket_ptr.add(thread.index)).get();
             *value_ptr = Some(data);
             (&*value_ptr).as_ref().unchecked_unwrap()
         }
@@ -269,8 +252,12 @@ impl<T: Send> ThreadLocal<T> {
     fn raw_iter(&mut self) -> RawIter<T> {
         RawIter {
             remaining: *self.lock.get_mut().unwrap(),
+            buckets: unsafe {
+                *(&self.buckets as *const _ as *const [*const UnsafeCell<Option<T>>; BUCKETS])
+            },
+            bucket: 0,
+            bucket_size: 1,
             index: 0,
-            list: *self.list.get_mut(),
         }
     }
 
@@ -337,8 +324,10 @@ impl<T: Send + UnwindSafe> UnwindSafe for ThreadLocal<T> {}
 
 struct RawIter<T: Send> {
     remaining: usize,
+    buckets: [*const UnsafeCell<Option<T>>; BUCKETS],
+    bucket: usize,
+    bucket_size: usize,
     index: usize,
-    list: *const List<T>,
 }
 
 impl<T: Send> Iterator for RawIter<T> {
@@ -350,18 +339,27 @@ impl<T: Send> Iterator for RawIter<T> {
         }
 
         loop {
-            let values = &*unsafe { &*self.list }.values;
+            let bucket = unsafe { *self.buckets.get_unchecked(self.bucket) };
 
-            while self.index < values.len() {
-                let val = values[self.index].get();
-                self.index += 1;
-                if unsafe { (*val).is_some() } {
-                    self.remaining -= 1;
-                    return Some(val);
+            if !bucket.is_null() {
+                while self.index < self.bucket_size {
+                    let item = unsafe { (&*bucket.add(self.index)).get() };
+
+                    self.index += 1;
+
+                    if unsafe { &*item }.is_some() {
+                        self.remaining -= 1;
+                        return Some(item);
+                    }
                 }
             }
+
+            if self.bucket != 0 {
+                self.bucket_size <<= 1;
+            }
+            self.bucket += 1;
+
             self.index = 0;
-            self.list = unsafe { (*self.list).prev.as_ref().unchecked_unwrap().as_ref() };
         }
     }
 
@@ -413,6 +411,15 @@ impl<T: Send> Iterator for IntoIter<T> {
 }
 
 impl<T: Send> ExactSizeIterator for IntoIter<T> {}
+
+fn allocate_bucket<T>(size: usize) -> *mut UnsafeCell<Option<T>> {
+    Box::into_raw(
+        (0..size)
+            .map(|_| UnsafeCell::new(None::<T>))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    ) as *mut _
+}
 
 #[cfg(test)]
 mod tests {

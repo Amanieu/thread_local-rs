@@ -4,7 +4,7 @@ use std::fmt;
 use std::panic::UnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::usize;
-use thread_id;
+use thread_id::{self, Thread};
 use unreachable::{UncheckedOptionExt, UncheckedResultExt};
 
 /// Wrapper around `ThreadLocal` which adds a fast path for a single thread.
@@ -39,15 +39,15 @@ impl<T: Send> CachedThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let id = thread_id::get();
+        let thread = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
-        if owner == id {
+        if owner == thread.id {
             return unsafe { Some((*self.local.get()).as_ref().unchecked_unwrap()) };
         }
         if owner == usize::MAX {
             return None;
         }
-        self.global.get_fast(id)
+        self.global.get_inner(thread)
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -70,24 +70,24 @@ impl<T: Send> CachedThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let id = thread_id::get();
+        let thread = thread_id::get();
         let owner = self.owner.load(Ordering::Relaxed);
-        if owner == id {
+        if owner == thread.id {
             return Ok(unsafe { (*self.local.get()).as_ref().unchecked_unwrap() });
         }
-        self.get_or_try_slow(id, owner, create)
+        self.get_or_try_slow(thread, owner, create)
     }
 
     #[cold]
     #[inline(never)]
-    fn get_or_try_slow<F, E>(&self, id: usize, owner: usize, create: F) -> Result<&T, E>
+    fn get_or_try_slow<F, E>(&self, thread: Thread, owner: usize, create: F) -> Result<&T, E>
     where
         F: FnOnce() -> Result<T, E>,
     {
         if owner == usize::MAX
             && self
                 .owner
-                .compare_and_swap(usize::MAX, id, Ordering::Relaxed)
+                .compare_and_swap(usize::MAX, thread.id, Ordering::Relaxed)
                 == usize::MAX
         {
             unsafe {
@@ -95,9 +95,9 @@ impl<T: Send> CachedThreadLocal<T> {
                 return Ok((*self.local.get()).as_ref().unchecked_unwrap());
             }
         }
-        match self.global.get_fast(id) {
+        match self.global.get_inner(thread) {
             Some(x) => Ok(x),
-            None => Ok(self.global.insert(id, create()?, true)),
+            None => Ok(self.global.insert(thread, create()?)),
         }
     }
 
