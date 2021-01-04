@@ -16,7 +16,7 @@ script:
 - travis-cargo build
 - travis-cargo test
 # Criterion doesn't build on 1.28.0
-- travis-cargo --skip 1.28.0 bench --features criterion
+- travis-cargo --skip 1.28.0 bench -- --features criterion
 - travis-cargo doc -- --no-deps
 
 after_success:
