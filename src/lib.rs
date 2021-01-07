@@ -20,11 +20,6 @@
 //! only be done if you have mutable access to the `ThreadLocal` object, which
 //! guarantees that you are the only thread currently accessing it.
 //!
-//! A `CachedThreadLocal` type is also provided which wraps a `ThreadLocal` but
-//! also uses a special fast path for the first thread that writes into it. The
-//! fast path has very low overhead (<1ns per access) while keeping the same
-//! performance as `ThreadLocal` for other threads.
-//!
 //! Note that since thread IDs are recycled when a thread exits, it is possible
 //! for one thread to retrieve the object of another thread. Since this can only
 //! occur after a thread has exited this does not lead to any race conditions.
@@ -78,6 +73,7 @@ mod cached;
 mod thread_id;
 mod unreachable;
 
+#[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
 use std::cell::UnsafeCell;
@@ -91,6 +87,7 @@ use std::sync::Mutex;
 use thread_id::Thread;
 use unreachable::{UncheckedOptionExt, UncheckedResultExt};
 
+// Use usize::BITS once it has stabilized and the MSRV has been bumped.
 #[cfg(target_pointer_width = "16")]
 const POINTER_WIDTH: u8 = 16;
 #[cfg(target_pointer_width = "32")]
@@ -423,7 +420,7 @@ fn allocate_bucket<T>(size: usize) -> *mut UnsafeCell<Option<T>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CachedThreadLocal, ThreadLocal};
+    use super::ThreadLocal;
     use std::cell::RefCell;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
@@ -453,48 +450,9 @@ mod tests {
     }
 
     #[test]
-    fn same_thread_cached() {
-        let create = make_create();
-        let mut tls = CachedThreadLocal::new();
-        assert_eq!(None, tls.get());
-        assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
-        assert_eq!(0, *tls.get_or(|| create()));
-        assert_eq!(Some(&0), tls.get());
-        assert_eq!(0, *tls.get_or(|| create()));
-        assert_eq!(Some(&0), tls.get());
-        assert_eq!(0, *tls.get_or(|| create()));
-        assert_eq!(Some(&0), tls.get());
-        assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
-        tls.clear();
-        assert_eq!(None, tls.get());
-    }
-
-    #[test]
     fn different_thread() {
         let create = make_create();
         let tls = Arc::new(ThreadLocal::new());
-        assert_eq!(None, tls.get());
-        assert_eq!(0, *tls.get_or(|| create()));
-        assert_eq!(Some(&0), tls.get());
-
-        let tls2 = tls.clone();
-        let create2 = create.clone();
-        thread::spawn(move || {
-            assert_eq!(None, tls2.get());
-            assert_eq!(1, *tls2.get_or(|| create2()));
-            assert_eq!(Some(&1), tls2.get());
-        })
-        .join()
-        .unwrap();
-
-        assert_eq!(Some(&0), tls.get());
-        assert_eq!(0, *tls.get_or(|| create()));
-    }
-
-    #[test]
-    fn different_thread_cached() {
-        let create = make_create();
-        let tls = Arc::new(CachedThreadLocal::new());
         assert_eq!(None, tls.get());
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
@@ -542,39 +500,9 @@ mod tests {
     }
 
     #[test]
-    fn iter_cached() {
-        let tls = Arc::new(CachedThreadLocal::new());
-        tls.get_or(|| Box::new(1));
-
-        let tls2 = tls.clone();
-        thread::spawn(move || {
-            tls2.get_or(|| Box::new(2));
-            let tls3 = tls2.clone();
-            thread::spawn(move || {
-                tls3.get_or(|| Box::new(3));
-            })
-            .join()
-            .unwrap();
-            drop(tls2);
-        })
-        .join()
-        .unwrap();
-
-        let mut tls = Arc::try_unwrap(tls).unwrap();
-        let mut v = tls.iter_mut().map(|x| **x).collect::<Vec<i32>>();
-        v.sort_unstable();
-        assert_eq!(vec![1, 2, 3], v);
-        let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
-        v.sort_unstable();
-        assert_eq!(vec![1, 2, 3], v);
-    }
-
-    #[test]
     fn is_sync() {
         fn foo<T: Sync>() {}
         foo::<ThreadLocal<String>>();
         foo::<ThreadLocal<RefCell<String>>>();
-        foo::<CachedThreadLocal<String>>();
-        foo::<CachedThreadLocal<RefCell<String>>>();
     }
 }
