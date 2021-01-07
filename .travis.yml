@@ -5,7 +5,7 @@ rust:
 - nightly
 - beta
 - stable
-- 1.27.2
+- 1.28.0
 
 before_script:
 - |
@@ -15,12 +15,12 @@ before_script:
 script:
 - travis-cargo build
 - travis-cargo test
-- travis-cargo bench
+# Criterion doesn't build on 1.28.0
+- travis-cargo --skip 1.28.0 bench -- --features criterion
 - travis-cargo doc -- --no-deps
 
 after_success:
 - travis-cargo --only nightly doc-upload
-
 env:
   global:
   - TRAVIS_CARGO_NIGHTLY_FEATURE=""
