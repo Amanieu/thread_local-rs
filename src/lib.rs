@@ -70,12 +70,14 @@
 extern crate lazy_static;
 
 mod cached;
+mod maybe_uninit;
 mod thread_id;
 mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
+use maybe_uninit::MaybeUninit;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
@@ -86,7 +88,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use thread_id::Thread;
-use unreachable::{UncheckedOptionExt, UncheckedResultExt};
+use unreachable::UncheckedResultExt;
 
 // Use usize::BITS once it has stabilized and the MSRV has been bumped.
 #[cfg(target_pointer_width = "16")]
@@ -119,8 +121,7 @@ pub struct ThreadLocal<T: Send> {
 
 struct Entry<T> {
     present: AtomicBool,
-    // Use MaybeUninit once the MSRV has been bumped.
-    value: UnsafeCell<Option<T>>,
+    value: UnsafeCell<MaybeUninit<T>>,
 }
 
 // ThreadLocal is always Sync, even if T isn't
@@ -226,7 +227,15 @@ impl<T: Send> ThreadLocal<T> {
         if bucket_ptr.is_null() {
             return None;
         }
-        unsafe { (&*(*bucket_ptr.add(thread.index)).value.get()).as_ref() }
+        unsafe {
+            let entry = &*bucket_ptr.add(thread.index);
+            // Read without atomic operations as only this thread can set the value.
+            if (&entry.present as *const _ as *const bool).read() {
+                Some(&*(&*entry.value.get()).as_ptr())
+            } else {
+                None
+            }
+        }
     }
 
     #[cold]
@@ -251,12 +260,12 @@ impl<T: Send> ThreadLocal<T> {
         // Insert the new element into the bucket
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
         let value_ptr = entry.value.get();
-        unsafe { value_ptr.write(Some(data)) };
+        unsafe { value_ptr.write(MaybeUninit::new(data)) };
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
 
-        unsafe { (&*value_ptr).as_ref().unchecked_unwrap() }
+        unsafe { &*(&*value_ptr).as_ptr() }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
@@ -370,7 +379,7 @@ impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
                     self.index += 1;
                     if entry.present.load(Ordering::Acquire) {
                         self.yielded += 1;
-                        return Some(unsafe { (&*entry.value.get()).as_ref().unchecked_unwrap() });
+                        return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
                     }
                 }
             }
@@ -401,7 +410,7 @@ struct RawIterMut<T: Send> {
 }
 
 impl<T: Send> Iterator for RawIterMut<T> {
-    type Item = *mut Option<T>;
+    type Item = *mut MaybeUninit<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -448,7 +457,7 @@ impl<'a, T: Send + 'a> Iterator for IterMut<'a, T> {
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next()
-            .map(|x| unsafe { &mut *(*x).as_mut().unchecked_unwrap() })
+            .map(|x| unsafe { &mut *(&mut *x).as_mut_ptr() })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -470,7 +479,7 @@ impl<T: Send> Iterator for IntoIter<T> {
     fn next(&mut self) -> Option<T> {
         self.raw
             .next()
-            .map(|x| unsafe { (*x).take().unchecked_unwrap() })
+            .map(|x| unsafe { std::mem::replace(&mut *x, MaybeUninit::uninit()).assume_init() })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -485,7 +494,7 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
         (0..size)
             .map(|_| Entry::<T> {
                 present: AtomicBool::new(false),
-                value: UnsafeCell::new(None),
+                value: UnsafeCell::new(MaybeUninit::uninit()),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice(),
