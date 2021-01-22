@@ -8,12 +8,13 @@ license = "Apache-2.0/MIT"
 repository = "https://github.com/Amanieu/thread_local-rs"
 readme = "README.md"
 keywords = ["thread_local", "concurrent", "thread"]
+edition = "2018"
 
 [badges]
 travis-ci = { repository = "Amanieu/thread_local-rs" }
 
 [dependencies]
-lazy_static = "1.0"
+once_cell = "1.5.2"
 
 # This is actually a dev-dependency, see https://github.com/rust-lang/cargo/issues/1596
 criterion = { version = "0.3.3", optional = true }

@@ -16,18 +16,12 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-thread_local = "1.0"
-```
-
-and this to your crate root:
-
-```rust
-extern crate thread_local;
+thread_local = "1.1"
 ```
 
 ## Minimum Rust version
 
-This crate's minimum supported Rust version (MSRV) is 1.28.0.
+This crate's minimum supported Rust version (MSRV) is 1.36.0.
 
 ## License
 
