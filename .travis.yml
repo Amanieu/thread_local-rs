@@ -5,7 +5,7 @@ rust:
 - nightly
 - beta
 - stable
-- 1.28.0
+- 1.36.0
 
 before_script:
 - |
@@ -15,8 +15,9 @@ before_script:
 script:
 - travis-cargo build
 - travis-cargo test
-# Criterion doesn't build on 1.28.0
-- travis-cargo --skip 1.28.0 bench -- --features criterion
+- travis-cargo bench -- --features criterion
+# Criterion may drop support for 1.36.0 in the future. If it does, replace the above line with this:
+# - travis-cargo --skip 1.36.0 bench -- --features criterion
 - travis-cargo doc -- --no-deps
 
 after_success:

@@ -66,23 +66,19 @@
 #![warn(missing_docs)]
 #![allow(clippy::mutex_atomic)]
 
-#[macro_use]
-extern crate lazy_static;
-
 mod cached;
-mod maybe_uninit;
 mod thread_id;
 mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
-use maybe_uninit::MaybeUninit;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::mem;
+use std::mem::MaybeUninit;
 use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
@@ -331,7 +327,7 @@ impl<T: Send> IntoIterator for ThreadLocal<T> {
     }
 }
 
-impl<'a, T: Send + 'a> IntoIterator for &'a mut ThreadLocal<T> {
+impl<'a, T: Send> IntoIterator for &'a mut ThreadLocal<T> {
     type Item = &'a mut T;
     type IntoIter = IterMut<'a, T>;
 
@@ -357,7 +353,7 @@ impl<T: Send + fmt::Debug> fmt::Debug for ThreadLocal<T> {
 impl<T: Send + UnwindSafe> UnwindSafe for ThreadLocal<T> {}
 
 /// Iterator over the contents of a `ThreadLocal`.
-pub struct Iter<'a, T: Send + Sync + 'a> {
+pub struct Iter<'a, T: Send + Sync> {
     thread_local: &'a ThreadLocal<T>,
     yielded: usize,
     bucket: usize,
@@ -399,7 +395,7 @@ impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
         (total - self.yielded, None)
     }
 }
-impl<'a, T: Send + Sync> FusedIterator for Iter<'a, T> {}
+impl<T: Send + Sync> FusedIterator for Iter<'_, T> {}
 
 struct RawIterMut<T: Send> {
     remaining: usize,
@@ -446,12 +442,12 @@ impl<T: Send> Iterator for RawIterMut<T> {
 }
 
 /// Mutable iterator over the contents of a `ThreadLocal`.
-pub struct IterMut<'a, T: Send + 'a> {
+pub struct IterMut<'a, T: Send> {
     raw: RawIterMut<T>,
     marker: PhantomData<&'a mut ThreadLocal<T>>,
 }
 
-impl<'a, T: Send + 'a> Iterator for IterMut<'a, T> {
+impl<'a, T: Send> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<&'a mut T> {
@@ -465,7 +461,7 @@ impl<'a, T: Send + 'a> Iterator for IterMut<'a, T> {
     }
 }
 
-impl<'a, T: Send + 'a> ExactSizeIterator for IterMut<'a, T> {}
+impl<T: Send> ExactSizeIterator for IterMut<'_, T> {}
 
 /// An iterator that moves out of a `ThreadLocal`.
 pub struct IntoIter<T: Send> {
@@ -496,8 +492,7 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
                 present: AtomicBool::new(false),
                 value: UnsafeCell::new(MaybeUninit::uninit()),
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
+            .collect(),
     ) as *mut _
 }
 
