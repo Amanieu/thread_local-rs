@@ -8,7 +8,7 @@ object to be used for each thread. This allows for per-object thread-local
 storage, unlike the standard library's `thread_local!` macro which only allows
 static thread-local storage.
 
-[Documentation](https://amanieu.github.io/thread_local-rs/thread_local/index.html)
+[Documentation](https://docs.rs/thread_local/)
 
 ## Usage
 
