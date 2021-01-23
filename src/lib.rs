@@ -353,6 +353,7 @@ impl<T: Send + fmt::Debug> fmt::Debug for ThreadLocal<T> {
 impl<T: Send + UnwindSafe> UnwindSafe for ThreadLocal<T> {}
 
 /// Iterator over the contents of a `ThreadLocal`.
+#[derive(Debug)]
 pub struct Iter<'a, T: Send + Sync> {
     thread_local: &'a ThreadLocal<T>,
     yielded: usize,
@@ -441,6 +442,9 @@ impl<T: Send> Iterator for RawIterMut<T> {
     }
 }
 
+unsafe impl<T: Send> Send for RawIterMut<T> {}
+unsafe impl<T: Send + Sync> Sync for RawIterMut<T> {}
+
 /// Mutable iterator over the contents of a `ThreadLocal`.
 pub struct IterMut<'a, T: Send> {
     raw: RawIterMut<T>,
@@ -462,6 +466,19 @@ impl<'a, T: Send> Iterator for IterMut<'a, T> {
 }
 
 impl<T: Send> ExactSizeIterator for IterMut<'_, T> {}
+impl<T: Send> FusedIterator for IterMut<'_, T> {}
+
+// The Debug bound is technically unnecessary but makes the API more consistent and future-proof.
+impl<T: Send + fmt::Debug> fmt::Debug for IterMut<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IterMut")
+            .field("remaining", &self.raw.remaining)
+            .field("bucket", &self.raw.bucket)
+            .field("bucket_size", &self.raw.bucket_size)
+            .field("index", &self.raw.index)
+            .finish()
+    }
+}
 
 /// An iterator that moves out of a `ThreadLocal`.
 pub struct IntoIter<T: Send> {
@@ -484,6 +501,19 @@ impl<T: Send> Iterator for IntoIter<T> {
 }
 
 impl<T: Send> ExactSizeIterator for IntoIter<T> {}
+impl<T: Send> FusedIterator for IntoIter<T> {}
+
+// The Debug bound is technically unnecessary but makes the API more consistent and future-proof.
+impl<T: Send + fmt::Debug> fmt::Debug for IntoIter<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntoIter")
+            .field("remaining", &self.raw.remaining)
+            .field("bucket", &self.raw.bucket)
+            .field("bucket_size", &self.raw.bucket_size)
+            .field("index", &self.raw.index)
+            .finish()
+    }
+}
 
 fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
     Box::into_raw(
