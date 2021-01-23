@@ -327,6 +327,15 @@ impl<T: Send> IntoIterator for ThreadLocal<T> {
     }
 }
 
+impl<'a, T: Send + Sync> IntoIterator for &'a ThreadLocal<T> {
+    type Item = &'a T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<'a, T: Send> IntoIterator for &'a mut ThreadLocal<T> {
     type Item = &'a mut T;
     type IntoIter = IterMut<'a, T>;
