@@ -355,6 +355,7 @@ struct RawIter {
     index: usize,
 }
 impl RawIter {
+    #[inline]
     fn new() -> Self {
         Self {
             yielded: 0,
@@ -411,6 +412,7 @@ impl RawIter {
         }
     }
 
+    #[inline]
     fn next_bucket(&mut self) {
         if self.bucket != 0 {
             self.bucket_size <<= 1;
