@@ -16,12 +16,10 @@ travis-ci = { repository = "Amanieu/thread_local-rs" }
 [dependencies]
 once_cell = "1.5.2"
 
-# This is actually a dev-dependency, see https://github.com/rust-lang/cargo/issues/1596
-criterion = { version = "0.3.3", optional = true }
-
-[dev-dependencies]
+[target.'cfg(bench)'.dev-dependencies]
+# to activate, pass RUSTFLAGS="--cfg bench" until cargo does this automatically
+criterion = "0.3.3"
 
 [[bench]]
 name = "thread_local"
-required-features = ["criterion"]
 harness = false
