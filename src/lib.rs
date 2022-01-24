@@ -378,7 +378,7 @@ impl RawIter {
     fn next<'a, T: Send + Sync>(&mut self, thread_local: &'a ThreadLocal<T>) -> Option<&'a T> {
         while self.bucket < BUCKETS {
             let bucket = unsafe { thread_local.buckets.get_unchecked(self.bucket) };
-            let bucket = bucket.load(Ordering::Relaxed);
+            let bucket = bucket.load(Ordering::Acquire);
 
             if !bucket.is_null() {
                 while self.index < self.bucket_size {
