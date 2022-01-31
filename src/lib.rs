@@ -81,7 +81,6 @@ use std::mem::MaybeUninit;
 use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::Mutex;
 use thread_id::Thread;
 use unreachable::UncheckedResultExt;
 
@@ -107,11 +106,6 @@ pub struct ThreadLocal<T: Send> {
     /// The number of values in the thread local. This can be less than the real number of values,
     /// but is never more.
     values: AtomicUsize,
-
-    /// Lock used to guard against concurrent modifications. This is taken when
-    /// there is a possibility of allocating a new bucket, which only occurs
-    /// when inserting values.
-    lock: Mutex<()>,
 }
 
 struct Entry<T> {
@@ -190,7 +184,6 @@ impl<T: Send> ThreadLocal<T> {
             // representation as a sequence of their inner type.
             buckets: unsafe { mem::transmute(buckets) },
             values: AtomicUsize::new(0),
-            lock: Mutex::new(()),
         }
     }
 
@@ -245,22 +238,34 @@ impl<T: Send> ThreadLocal<T> {
 
     #[cold]
     fn insert(&self, thread: Thread, data: T) -> &T {
-        // Lock the Mutex to ensure only a single thread is allocating buckets at once
-        let _guard = self.lock.lock().unwrap();
-
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
-
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
+
+        // If the bucket doesn't already exist, we need to allocate it
         let bucket_ptr = if bucket_ptr.is_null() {
-            // Allocate a new bucket
-            let bucket_ptr = allocate_bucket(thread.bucket_size);
-            bucket_atomic_ptr.store(bucket_ptr, Ordering::Release);
-            bucket_ptr
+            let new_bucket = allocate_bucket(thread.bucket_size);
+
+            match bucket_atomic_ptr.compare_exchange(
+                ptr::null_mut(),
+                new_bucket,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => new_bucket,
+                // If the bucket value changed (from null), that means
+                // another thread stored a new bucket before we could,
+                // and we can free our bucket and use that one instead
+                Err(bucket_ptr) => {
+                    unsafe {
+                        let _ = Box::from_raw(new_bucket);
+                    }
+
+                    bucket_ptr
+                }
+            }
         } else {
             bucket_ptr
         };
-
-        drop(_guard);
 
         // Insert the new element into the bucket
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
