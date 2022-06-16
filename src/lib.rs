@@ -149,7 +149,7 @@ impl<T: Send> Drop for ThreadLocal<T> {
                 continue;
             }
 
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(bucket_ptr, this_bucket_size)) };
+            unsafe { deallocate_bucket(bucket_ptr, this_bucket_size) };
         }
     }
 }
@@ -256,10 +256,7 @@ impl<T: Send> ThreadLocal<T> {
                 // another thread stored a new bucket before we could,
                 // and we can free our bucket and use that one instead
                 Err(bucket_ptr) => {
-                    unsafe {
-                        let _ = Box::from_raw(new_bucket);
-                    }
-
+                    unsafe { deallocate_bucket(new_bucket, thread.bucket_size) }
                     bucket_ptr
                 }
             }
@@ -528,6 +525,10 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
             })
             .collect(),
     ) as *mut _
+}
+
+unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
+    let _ = Box::from_raw(std::slice::from_raw_parts_mut(bucket, size));
 }
 
 #[cfg(test)]
