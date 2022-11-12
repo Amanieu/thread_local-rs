@@ -89,6 +89,7 @@ impl Drop for ThreadHolder {
 thread_local!(static THREAD_HOLDER: ThreadHolder = ThreadHolder::new());
 
 /// Get the current thread.
+#[inline]
 pub(crate) fn get() -> Thread {
     THREAD_HOLDER.with(|holder| holder.0)
 }
