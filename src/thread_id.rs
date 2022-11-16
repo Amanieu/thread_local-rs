@@ -7,7 +7,7 @@
 
 use crate::POINTER_WIDTH;
 use once_cell::sync::Lazy;
-use std::cmp::Reverse;
+use std::{cmp::Reverse, thread::AccessError};
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
 use std::usize;
@@ -91,7 +91,15 @@ thread_local!(static THREAD_HOLDER: ThreadHolder = ThreadHolder::new());
 /// Get the current thread.
 #[inline]
 pub(crate) fn get() -> Thread {
-    THREAD_HOLDER.with(|holder| holder.0)
+    try_get().unwrap()
+}
+
+/// Get the current thread.
+/// 
+/// If the key has been destroyed (which may happen if this is called
+/// in a destructor), this function will return an [`AccessError`].
+pub(crate) fn try_get() -> Result<Thread, AccessError> {
+    THREAD_HOLDER.try_with(|holder| holder.0)
 }
 
 #[test]
