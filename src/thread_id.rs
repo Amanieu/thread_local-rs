@@ -6,6 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 use crate::POINTER_WIDTH;
+use cfg_if::cfg_if;
 use once_cell::sync::Lazy;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -74,24 +75,60 @@ impl Thread {
 }
 
 /// Wrapper around `Thread` that allocates and deallocates the ID.
-struct ThreadHolder(Thread);
-impl ThreadHolder {
-    fn new() -> ThreadHolder {
-        ThreadHolder(Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc()))
+pub(crate) struct ThreadHolder(pub(crate) Thread);
+
+cfg_if! {
+    if #[cfg(feature = "nightly")] {
+        impl ThreadHolder {
+            pub(crate) fn new() -> ThreadHolder {
+                // we have to initialize `THREAD_HOLDER_GUARD` in order for it to protect
+                // `THREAD_HOLDER` when it gets initialized
+                THREAD_HOLDER_GUARD.with(|_| {});
+                ThreadHolder(Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc()))
+            }
+        }
+    } else {
+        impl ThreadHolder {
+            fn new() -> ThreadHolder {
+                ThreadHolder(Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc()))
+            }
+        }
     }
 }
+
 impl Drop for ThreadHolder {
     fn drop(&mut self) {
         THREAD_ID_MANAGER.lock().unwrap().free(self.0.id);
     }
 }
 
-thread_local!(static THREAD_HOLDER: ThreadHolder = ThreadHolder::new());
+cfg_if! {
+    if #[cfg(feature = "nightly")] {
+        #[thread_local]
+        pub(crate) static mut THREAD_HOLDER: Option<ThreadHolder> = None;
 
-/// Get the current thread.
-#[inline]
-pub(crate) fn get() -> Thread {
-    THREAD_HOLDER.with(|holder| holder.0)
+        thread_local! { static THREAD_HOLDER_GUARD: ThreadHolderGuard = const { ThreadHolderGuard }; }
+
+        struct ThreadHolderGuard;
+
+        impl Drop for ThreadHolderGuard {
+            fn drop(&mut self) {
+                // SAFETY: this is safe because we know that we (the current thread)
+                // are the only one who can be accessing our `THREAD_HOLDER` and thus
+                // it's safe for us to access and drop it.
+                unsafe { THREAD_HOLDER.take(); }
+            }
+        }
+
+    } else {
+        thread_local!(static THREAD_HOLDER: ThreadHolder = ThreadHolder::new());
+
+        /// Get the current thread.
+        #[inline]
+        pub(crate) fn get() -> Thread {
+            THREAD_HOLDER.with(|holder| holder.0)
+        }
+    }
 }
 
 #[test]

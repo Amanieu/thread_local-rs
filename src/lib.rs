@@ -65,6 +65,7 @@
 
 #![warn(missing_docs)]
 #![allow(clippy::mutex_atomic)]
+#![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
 mod thread_id;
@@ -73,6 +74,8 @@ mod unreachable;
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
+#[cfg(feature = "nightly")]
+use crate::thread_id::ThreadHolder;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
@@ -188,9 +191,19 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     /// Returns the element for the current thread, if it exists.
+    #[cfg(feature = "nightly")]
+    pub fn get(&self) -> Option<&T> {
+        match unsafe { thread_id::THREAD_HOLDER.as_ref() } {
+            None => None,
+            Some(x) => self.get_inner(&x.0),
+        }
+    }
+
+    /// Returns the element for the current thread, if it exists.
+    #[cfg(not(feature = "nightly"))]
     pub fn get(&self) -> Option<&T> {
         let thread = thread_id::get();
-        self.get_inner(thread)
+        self.get_inner(&thread)
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -208,18 +221,36 @@ impl<T: Send> ThreadLocal<T> {
     /// Returns the element for the current thread, or creates it if it doesn't
     /// exist. If `create` fails, that error is returned and no element is
     /// added.
+    #[cfg(feature = "nightly")]
+    pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        if let Some(thread) = unsafe { thread_id::THREAD_HOLDER.as_ref() } {
+            if let Some(inner) = self.get_inner(&thread.0) {
+                return Ok(inner);
+            }
+        }
+        let thread = ThreadHolder::new();
+        Ok(self.insert(thread, create()?))
+    }
+
+    /// Returns the element for the current thread, or creates it if it doesn't
+    /// exist. If `create` fails, that error is returned and no element is
+    /// added.
+    #[cfg(not(feature = "nightly"))]
     pub fn get_or_try<F, E>(&self, create: F) -> Result<&T, E>
     where
         F: FnOnce() -> Result<T, E>,
     {
         let thread = thread_id::get();
-        match self.get_inner(thread) {
+        match self.get_inner(&thread) {
             Some(x) => Ok(x),
             None => Ok(self.insert(thread, create()?)),
         }
     }
 
-    fn get_inner(&self, thread: Thread) -> Option<&T> {
+    fn get_inner(&self, thread: &Thread) -> Option<&T> {
         let bucket_ptr =
             unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
         if bucket_ptr.is_null() {
@@ -237,7 +268,23 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     #[cold]
+    #[cfg(feature = "nightly")]
+    fn insert(&self, thread: ThreadHolder, data: T) -> &T {
+        unsafe {
+            thread_id::THREAD_HOLDER = Some(thread);
+        }
+        let thread = &unsafe { thread_id::THREAD_HOLDER.as_ref().unwrap_unchecked() }.0;
+
+        self.insert_inner(thread, data)
+    }
+
+    #[cold]
+    #[cfg(not(feature = "nightly"))]
     fn insert(&self, thread: Thread, data: T) -> &T {
+        self.insert_inner(&thread, data)
+    }
+
+    fn insert_inner(&self, thread: &Thread, data: T) -> &T {
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
@@ -503,9 +550,7 @@ impl<T: Send> Iterator for IntoIter<T> {
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
-            unsafe {
-                std::mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init()
-            }
+            unsafe { mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init() }
         })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
