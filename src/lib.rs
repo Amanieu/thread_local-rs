@@ -193,9 +193,9 @@ impl<T: Send> ThreadLocal<T> {
     /// Returns the element for the current thread, if it exists.
     #[cfg(feature = "nightly")]
     pub fn get(&self) -> Option<&T> {
-        match unsafe { thread_id::THREAD_HOLDER.as_ref() } {
+        match thread_id::try_get_thread_holder() {
             None => None,
-            Some(x) => self.get_inner(&x.0),
+            Some(x) => self.get_inner(x.into_inner()),
         }
     }
 
@@ -203,7 +203,7 @@ impl<T: Send> ThreadLocal<T> {
     #[cfg(not(feature = "nightly"))]
     pub fn get(&self) -> Option<&T> {
         let thread = thread_id::get();
-        self.get_inner(&thread)
+        self.get_inner(thread)
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -226,8 +226,8 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        if let Some(thread) = unsafe { thread_id::THREAD_HOLDER.as_ref() } {
-            if let Some(inner) = self.get_inner(&thread.0) {
+        if let Some(thread) = thread_id::try_get_thread_holder() {
+            if let Some(inner) = self.get_inner(thread.into_inner()) {
                 return Ok(inner);
             }
         }
@@ -244,13 +244,13 @@ impl<T: Send> ThreadLocal<T> {
         F: FnOnce() -> Result<T, E>,
     {
         let thread = thread_id::get();
-        match self.get_inner(&thread) {
+        match self.get_inner(thread) {
             Some(x) => Ok(x),
             None => Ok(self.insert(thread, create()?)),
         }
     }
 
-    fn get_inner(&self, thread: &Thread) -> Option<&T> {
+    fn get_inner(&self, thread: Thread) -> Option<&T> {
         let bucket_ptr =
             unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
         if bucket_ptr.is_null() {
@@ -269,11 +269,9 @@ impl<T: Send> ThreadLocal<T> {
 
     #[cold]
     #[cfg(feature = "nightly")]
-    fn insert(&self, thread: ThreadHolder, data: T) -> &T {
-        unsafe {
-            thread_id::THREAD_HOLDER = Some(thread);
-        }
-        let thread = &unsafe { thread_id::THREAD_HOLDER.as_ref().unwrap_unchecked() }.0;
+    fn insert(&self, thread: ThreadHolder<true>, data: T) -> &T {
+        thread_id::set_thread_holder(thread);
+        let thread = unsafe { thread_id::try_get_thread_holder().unwrap_unchecked() }.into_inner();
 
         self.insert_inner(thread, data)
     }
@@ -281,10 +279,10 @@ impl<T: Send> ThreadLocal<T> {
     #[cold]
     #[cfg(not(feature = "nightly"))]
     fn insert(&self, thread: Thread, data: T) -> &T {
-        self.insert_inner(&thread, data)
+        self.insert_inner(thread, data)
     }
 
-    fn insert_inner(&self, thread: &Thread, data: T) -> &T {
+    fn insert_inner(&self, thread: Thread, data: T) -> &T {
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
