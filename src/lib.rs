@@ -189,8 +189,7 @@ impl<T: Send> ThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        let thread = thread_id::get();
-        self.get_inner(thread)
+        thread_id::try_get().and_then(|thread| self.get_inner(thread))
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -212,11 +211,13 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let thread = thread_id::get();
-        match self.get_inner(thread) {
-            Some(x) => Ok(x),
-            None => Ok(self.insert(thread, create()?)),
+        let thread = thread_id::try_get();
+        if let Some(thread) = thread {
+            if let Some(val) = self.get_inner(thread) {
+                return Ok(val);
+            }
         }
+        Ok(self.insert(create()?))
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
@@ -237,7 +238,8 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     #[cold]
-    fn insert(&self, thread: Thread, data: T) -> &T {
+    fn insert(&self, data: T) -> &T {
+        let thread = thread_id::get();
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
