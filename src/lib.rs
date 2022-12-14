@@ -74,8 +74,6 @@ mod unreachable;
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
-#[cfg(feature = "nightly")]
-use crate::thread_id::ThreadHolder;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
@@ -193,17 +191,16 @@ impl<T: Send> ThreadLocal<T> {
     /// Returns the element for the current thread, if it exists.
     #[cfg(feature = "nightly")]
     pub fn get(&self) -> Option<&T> {
-        match thread_id::try_get_thread_holder() {
+        match thread_id::try_get_thread() {
             None => None,
-            Some(x) => self.get_inner(x.into_inner()),
+            Some(x) => self.get_inner(x),
         }
     }
 
     /// Returns the element for the current thread, if it exists.
     #[cfg(not(feature = "nightly"))]
     pub fn get(&self) -> Option<&T> {
-        let thread = thread_id::get();
-        self.get_inner(thread)
+        thread_id::try_get().and_then(|thread| self.get_inner(thread))
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -226,8 +223,8 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        if let Some(thread) = thread_id::try_get_thread_holder() {
-            if let Some(inner) = self.get_inner(thread.into_inner()) {
+        if let Some(thread) = thread_id::try_get_thread() {
+            if let Some(inner) = self.get_inner(thread) {
                 return Ok(inner);
             }
         }
@@ -242,11 +239,13 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let thread = thread_id::get();
-        match self.get_inner(thread) {
-            Some(x) => Ok(x),
-            None => Ok(self.insert(thread, create()?)),
+        let thread = thread_id::try_get();
+        if let Some(thread) = thread {
+            if let Some(val) = self.get_inner(thread) {
+                return Ok(val);
+            }
         }
+        Ok(self.insert(create()?))
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
@@ -269,12 +268,11 @@ impl<T: Send> ThreadLocal<T> {
     #[cold]
     #[cfg(feature = "nightly")]
     fn insert(&self, data: T) -> &T {
-        let thread = if let Some(thread) = thread_id::try_get_thread_holder() {
-            thread.into_inner()
+        let thread = if let Some(thread) = thread_id::try_get_thread() {
+            thread
         } else {
-            let thread = ThreadHolder::new();
-            thread_id::set_thread_holder(thread);
-            unsafe { thread_id::try_get_thread_holder().unwrap_unchecked() }.into_inner()
+            thread_id::set_thread();
+            unsafe { thread_id::try_get_thread().unwrap_unchecked() }
         };
 
         self.insert_inner(thread, data)
@@ -282,7 +280,8 @@ impl<T: Send> ThreadLocal<T> {
 
     #[cold]
     #[cfg(not(feature = "nightly"))]
-    fn insert(&self, thread: Thread, data: T) -> &T {
+    fn insert(&self, data: T) -> &T {
+        let thread = thread_id::get();
         self.insert_inner(thread, data)
     }
 
