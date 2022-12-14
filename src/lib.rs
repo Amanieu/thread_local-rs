@@ -231,8 +231,7 @@ impl<T: Send> ThreadLocal<T> {
                 return Ok(inner);
             }
         }
-        let thread = ThreadHolder::new();
-        Ok(self.insert(thread, create()?))
+        Ok(self.insert(create()?))
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -269,9 +268,14 @@ impl<T: Send> ThreadLocal<T> {
 
     #[cold]
     #[cfg(feature = "nightly")]
-    fn insert(&self, thread: ThreadHolder<true>, data: T) -> &T {
-        thread_id::set_thread_holder(thread);
-        let thread = unsafe { thread_id::try_get_thread_holder().unwrap_unchecked() }.into_inner();
+    fn insert(&self, data: T) -> &T {
+        let thread = if let Some(thread) = thread_id::try_get_thread_holder() {
+            thread.into_inner()
+        } else {
+            let thread = ThreadHolder::new();
+            thread_id::set_thread_holder(thread);
+            unsafe { thread_id::try_get_thread_holder().unwrap_unchecked() }.into_inner()
+        };
 
         self.insert_inner(thread, data)
     }
