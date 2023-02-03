@@ -65,6 +65,7 @@
 
 #![warn(missing_docs)]
 #![allow(clippy::mutex_atomic)]
+#![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
 mod thread_id;

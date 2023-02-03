@@ -7,7 +7,6 @@
 
 use crate::POINTER_WIDTH;
 use once_cell::sync::Lazy;
-use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
@@ -74,44 +73,95 @@ impl Thread {
     }
 }
 
-// This is split into 2 thread-local variables so that we can check whether the
-// thread is initialized without having to register a thread-local destructor.
-//
-// This makes the fast path smaller.
-thread_local! { static THREAD: Cell<Option<Thread>> = const { Cell::new(None) }; }
-thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard }; }
+cfg_if::cfg_if! {
+    if #[cfg(feature = "nightly")] {
+        // This is split into 2 thread-local variables so that we can check whether the
+        // thread is initialized without having to register a thread-local destructor.
+        //
+        // This makes the fast path smaller.
+        #[thread_local]
+        static mut THREAD: Option<Thread> = None;
+        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard }; }
 
-// Guard to ensure the thread ID is released on thread exit.
-struct ThreadGuard;
+        // Guard to ensure the thread ID is released on thread exit.
+        struct ThreadGuard;
 
-impl Drop for ThreadGuard {
-    fn drop(&mut self) {
-        let thread = THREAD.with(|thread| thread.get()).unwrap();
-        THREAD_ID_MANAGER.lock().unwrap().free(thread.id);
-    }
-}
-
-/// Attempts to get the current thread if `get` has previously been
-/// called.
-#[inline]
-pub(crate) fn try_get() -> Option<Thread> {
-    THREAD.with(|thread| thread.get())
-}
-
-/// Returns a thread ID for the current thread, allocating one if needed.
-#[inline]
-pub(crate) fn get() -> Thread {
-    THREAD.with(|thread| {
-        if let Some(thread) = thread.get() {
-            thread
-        } else {
-            debug_assert!(thread.get().is_none());
-            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
-            thread.set(Some(new));
-            THREAD_GUARD.with(|_| {});
-            new
+        impl Drop for ThreadGuard {
+            fn drop(&mut self) {
+                // SAFETY: this is safe because we know that we (the current thread)
+                // are the only one who can be accessing our `THREAD` and thus
+                // it's safe for us to access and drop it.
+                if let Some(thread) = unsafe { THREAD.take() } {
+                    THREAD_ID_MANAGER.lock().unwrap().free(thread.id);
+                }
+            }
         }
-    })
+
+        /// Attempts to get the current thread if `get` has previously been
+        /// called.
+        #[inline]
+        pub(crate) fn try_get() -> Option<Thread> {
+            unsafe {
+                THREAD
+            }
+        }
+
+        /// Returns a thread ID for the current thread, allocating one if needed.
+        #[inline]
+        pub(crate) fn get() -> Thread {
+            if let Some(thread) = unsafe { THREAD } {
+                thread
+            } else {
+                let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+                unsafe {
+                    THREAD = Some(new);
+                }
+                THREAD_GUARD.with(|_| {});
+                new
+            }
+        }
+    } else {
+        use std::cell::Cell;
+
+        // This is split into 2 thread-local variables so that we can check whether the
+        // thread is initialized without having to register a thread-local destructor.
+        //
+        // This makes the fast path smaller.
+        thread_local! { static THREAD: Cell<Option<Thread>> = const { Cell::new(None) }; }
+        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard }; }
+
+        // Guard to ensure the thread ID is released on thread exit.
+        struct ThreadGuard;
+
+        impl Drop for ThreadGuard {
+            fn drop(&mut self) {
+                let thread = THREAD.with(|thread| thread.get()).unwrap();
+                THREAD_ID_MANAGER.lock().unwrap().free(thread.id);
+            }
+        }
+
+        /// Attempts to get the current thread if `get` has previously been
+        /// called.
+        #[inline]
+        pub(crate) fn try_get() -> Option<Thread> {
+            THREAD.with(|thread| thread.get())
+        }
+
+        /// Returns a thread ID for the current thread, allocating one if needed.
+        #[inline]
+        pub(crate) fn get() -> Thread {
+            THREAD.with(|thread| {
+                if let Some(thread) = thread.get() {
+                    thread
+                } else {
+                    let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+                    thread.set(Some(new));
+                    THREAD_GUARD.with(|_| {});
+                    new
+                }
+            })
+        }
+    }
 }
 
 #[test]
