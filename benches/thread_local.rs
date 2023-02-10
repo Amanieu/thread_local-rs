@@ -1,6 +1,3 @@
-extern crate criterion;
-extern crate thread_local;
-
 use criterion::{black_box, BatchSize};
 
 use thread_local::ThreadLocal;

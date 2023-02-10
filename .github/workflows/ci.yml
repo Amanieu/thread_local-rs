@@ -13,4 +13,4 @@ jobs:
           components: rustfmt
       - run: cargo fmt -- --check
       - run: cargo test
-      - run: cargo bench --features criterion
+      - run: cargo bench
