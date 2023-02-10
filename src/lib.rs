@@ -190,7 +190,7 @@ impl<T: Send> ThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        thread_id::try_get().and_then(|thread| self.get_inner(thread))
+        self.get_inner(thread_id::get())
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -212,12 +212,11 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let thread = thread_id::try_get();
-        if let Some(thread) = thread {
-            if let Some(val) = self.get_inner(thread) {
-                return Ok(val);
-            }
+        let thread = thread_id::get();
+        if let Some(val) = self.get_inner(thread) {
+            return Ok(val);
         }
+
         Ok(self.insert(create()?))
     }
 

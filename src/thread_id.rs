@@ -97,28 +97,25 @@ cfg_if::cfg_if! {
             }
         }
 
-        /// Attempts to get the current thread if `get` has previously been
-        /// called.
-        #[inline]
-        pub(crate) fn try_get() -> Option<Thread> {
-            unsafe {
-                THREAD
-            }
-        }
-
         /// Returns a thread ID for the current thread, allocating one if needed.
         #[inline]
         pub(crate) fn get() -> Thread {
             if let Some(thread) = unsafe { THREAD } {
                 thread
             } else {
-                let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
-                unsafe {
-                    THREAD = Some(new);
-                }
-                THREAD_GUARD.with(|_| {});
-                new
+                get_slow()
             }
+        }
+
+        /// Out-of-line slow path for allocating a thread ID.
+        #[cold]
+         fn get_slow() -> Thread {
+            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            unsafe {
+                THREAD = Some(new);
+            }
+            THREAD_GUARD.with(|_| {});
+            new
         }
     } else {
         use std::cell::Cell;
@@ -140,13 +137,6 @@ cfg_if::cfg_if! {
             }
         }
 
-        /// Attempts to get the current thread if `get` has previously been
-        /// called.
-        #[inline]
-        pub(crate) fn try_get() -> Option<Thread> {
-            THREAD.with(|thread| thread.get())
-        }
-
         /// Returns a thread ID for the current thread, allocating one if needed.
         #[inline]
         pub(crate) fn get() -> Thread {
@@ -154,12 +144,18 @@ cfg_if::cfg_if! {
                 if let Some(thread) = thread.get() {
                     thread
                 } else {
-                    let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
-                    thread.set(Some(new));
-                    THREAD_GUARD.with(|_| {});
-                    new
+                    get_slow(thread)
                 }
             })
+        }
+
+        /// Out-of-line slow path for allocating a thread ID.
+        #[cold]
+        fn get_slow(thread: &Cell<Option<Thread>>) -> Thread {
+            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            thread.set(Some(new));
+            THREAD_GUARD.with(|_| {});
+            new
         }
     }
 }
