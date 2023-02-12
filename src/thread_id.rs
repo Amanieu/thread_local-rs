@@ -7,6 +7,7 @@
 
 use crate::POINTER_WIDTH;
 use once_cell::sync::Lazy;
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
@@ -81,19 +82,25 @@ cfg_if::cfg_if! {
         // This makes the fast path smaller.
         #[thread_local]
         static mut THREAD: Option<Thread> = None;
-        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard }; }
+        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard { id: Cell::new(0) } }; }
 
         // Guard to ensure the thread ID is released on thread exit.
-        struct ThreadGuard;
+        struct ThreadGuard {
+            // We keep a copy of the thread ID in the ThreadGuard: we can't
+            // reliably access THREAD in our Drop impl due to the unpredictable
+            // order of TLS destructors.
+            id: Cell<usize>,
+        }
 
         impl Drop for ThreadGuard {
             fn drop(&mut self) {
-                // SAFETY: this is safe because we know that we (the current thread)
-                // are the only one who can be accessing our `THREAD` and thus
-                // it's safe for us to access and drop it.
-                if let Some(thread) = unsafe { THREAD.take() } {
-                    THREAD_ID_MANAGER.lock().unwrap().free(thread.id);
+                // Release the thread ID. Any further accesses to the thread ID
+                // will go through get_slow which will either panic or
+                // initialize a new ThreadGuard.
+                unsafe {
+                    THREAD = None;
                 }
+                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
             }
         }
 
@@ -114,26 +121,32 @@ cfg_if::cfg_if! {
             unsafe {
                 THREAD = Some(new);
             }
-            THREAD_GUARD.with(|_| {});
+            THREAD_GUARD.with(|guard| guard.id.set(new.id));
             new
         }
     } else {
-        use std::cell::Cell;
-
         // This is split into 2 thread-local variables so that we can check whether the
         // thread is initialized without having to register a thread-local destructor.
         //
         // This makes the fast path smaller.
         thread_local! { static THREAD: Cell<Option<Thread>> = const { Cell::new(None) }; }
-        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard }; }
+        thread_local! { static THREAD_GUARD: ThreadGuard = const { ThreadGuard { id: Cell::new(0) } }; }
 
         // Guard to ensure the thread ID is released on thread exit.
-        struct ThreadGuard;
+        struct ThreadGuard {
+            // We keep a copy of the thread ID in the ThreadGuard: we can't
+            // reliably access THREAD in our Drop impl due to the unpredictable
+            // order of TLS destructors.
+            id: Cell<usize>,
+        }
 
         impl Drop for ThreadGuard {
             fn drop(&mut self) {
-                let thread = THREAD.with(|thread| thread.get()).unwrap();
-                THREAD_ID_MANAGER.lock().unwrap().free(thread.id);
+                // Release the thread ID. Any further accesses to the thread ID
+                // will go through get_slow which will either panic or
+                // initialize a new ThreadGuard.
+                let _ = THREAD.try_with(|thread| thread.set(None));
+                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
             }
         }
 
@@ -154,7 +167,7 @@ cfg_if::cfg_if! {
         fn get_slow(thread: &Cell<Option<Thread>>) -> Thread {
             let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
             thread.set(Some(new));
-            THREAD_GUARD.with(|_| {});
+            THREAD_GUARD.with(|guard| guard.id.set(new.id));
             new
         }
     }
