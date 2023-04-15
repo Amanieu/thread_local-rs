@@ -147,7 +147,7 @@ impl<T: Send> Drop for ThreadLocal<T> {
             }
 
             if bucket_ptr.is_null() {
-                continue;
+                break;
             }
 
             unsafe { deallocate_bucket(bucket_ptr, this_bucket_size) };
