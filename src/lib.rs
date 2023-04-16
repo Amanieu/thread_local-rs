@@ -250,7 +250,7 @@ impl<T: Send> ThreadLocal<T> {
             match bucket_atomic_ptr.compare_exchange(
                 ptr::null_mut(),
                 new_bucket,
-                Ordering::AcqRel,
+                Ordering::Release,
                 Ordering::Acquire,
             ) {
                 Ok(_) => new_bucket,
