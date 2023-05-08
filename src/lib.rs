@@ -441,13 +441,7 @@ impl RawIter {
 
     fn size_hint<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
         let total = thread_local.values.load(Ordering::Acquire);
-        // max calculation: we know that all non-null buckets may be filled and as every
-        // bucket can contain 2^bucket_id items, which means that all current buckets
-        // combined have n^max_bucket - 1 items
-        (
-            total - self.yielded,
-            Some(total.next_power_of_two() - 1 - self.yielded),
-        )
+        (total - self.yielded, None)
     }
     fn size_hint_frozen<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
         let total = unsafe { *(&thread_local.values as *const AtomicUsize as *const usize) };
