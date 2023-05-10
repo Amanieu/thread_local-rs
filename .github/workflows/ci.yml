@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: dtolnay/rust-toolchain@1.59.0
+      - uses: dtolnay/rust-toolchain@1.60.0
         with:
           components: rustfmt
       - run: cargo fmt -- --check
