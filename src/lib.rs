@@ -384,14 +384,16 @@ impl RawIter {
             let bucket = unsafe { thread_local.buckets.get_unchecked(self.bucket) };
             let bucket = bucket.load(Ordering::Acquire);
 
-            if !bucket.is_null() {
-                while self.index < self.bucket_size {
-                    let entry = unsafe { &*bucket.add(self.index) };
-                    self.index += 1;
-                    if entry.present.load(Ordering::Acquire) {
-                        self.yielded += 1;
-                        return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
-                    }
+            if bucket.is_null() {
+                return None;
+            }
+
+            while self.index < self.bucket_size {
+                let entry = unsafe { &*bucket.add(self.index) };
+                self.index += 1;
+                if entry.present.load(Ordering::Acquire) {
+                    self.yielded += 1;
+                    return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
                 }
             }
 
@@ -411,14 +413,16 @@ impl RawIter {
             let bucket = unsafe { thread_local.buckets.get_unchecked_mut(self.bucket) };
             let bucket = *bucket.get_mut();
 
-            if !bucket.is_null() {
-                while self.index < self.bucket_size {
-                    let entry = unsafe { &mut *bucket.add(self.index) };
-                    self.index += 1;
-                    if *entry.present.get_mut() {
-                        self.yielded += 1;
-                        return Some(entry);
-                    }
+            if bucket.is_null() {
+                return None;
+            }
+
+            while self.index < self.bucket_size {
+                let entry = unsafe { &mut *bucket.add(self.index) };
+                self.index += 1;
+                if *entry.present.get_mut() {
+                    self.yielded += 1;
+                    return Some(entry);
                 }
             }
 
