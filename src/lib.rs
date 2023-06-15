@@ -94,13 +94,14 @@ const POINTER_WIDTH: u8 = 32;
 const POINTER_WIDTH: u8 = 64;
 
 /// The total number of buckets stored in each thread local.
-const BUCKETS: usize = (POINTER_WIDTH + 1) as usize;
+/// All buckets combined can hold up to `usize::MAX - 1` entries.
+const BUCKETS: usize = (POINTER_WIDTH - 1) as usize;
 
 /// Thread-local variable wrapper
 ///
 /// See the [module-level documentation](index.html) for more.
 pub struct ThreadLocal<T: Send> {
-    /// The buckets in the thread local. The nth bucket contains `2^(n-1)`
+    /// The buckets in the thread local. The nth bucket contains `2^n`
     /// elements. Each bucket is lazily allocated.
     buckets: [AtomicPtr<Entry<T>>; BUCKETS],
 
@@ -135,16 +136,11 @@ impl<T: Send> Default for ThreadLocal<T> {
 
 impl<T: Send> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
-        let mut bucket_size = 1;
-
         // Free each non-null bucket
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
             let bucket_ptr = *bucket.get_mut();
 
-            let this_bucket_size = bucket_size;
-            if i != 0 {
-                bucket_size <<= 1;
-            }
+            let this_bucket_size = 1 << i;
 
             if bucket_ptr.is_null() {
                 break;
@@ -165,22 +161,14 @@ impl<T: Send> ThreadLocal<T> {
     /// access the thread local it will never reallocate. The capacity may be rounded up to the
     /// nearest power of two.
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
-        let allocated_buckets = capacity
-            .checked_sub(1)
-            .map(|c| usize::from(POINTER_WIDTH) - (c.leading_zeros() as usize) + 1)
-            .unwrap_or(0);
+        let allocated_buckets = usize::from(POINTER_WIDTH) - (capacity.leading_zeros() as usize);
 
         let mut buckets = [ptr::null_mut(); BUCKETS];
-        let mut bucket_size = 1;
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
-            *bucket = allocate_bucket::<T>(bucket_size);
-
-            if i != 0 {
-                bucket_size <<= 1;
-            }
+            *bucket = allocate_bucket::<T>(1 << i);
         }
 
-        ThreadLocal {
+        Self {
             // Safety: AtomicPtr has the same representation as a pointer and arrays have the same
             // representation as a sequence of their inner type.
             buckets: unsafe { mem::transmute(buckets) },
@@ -432,9 +420,7 @@ impl RawIter {
 
     #[inline]
     fn next_bucket(&mut self) {
-        if self.bucket != 0 {
-            self.bucket_size <<= 1;
-        }
+        self.bucket_size <<= 1;
         self.bucket += 1;
         self.index = 0;
     }
