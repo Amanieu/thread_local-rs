@@ -11,7 +11,6 @@ use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Mutex;
-use std::usize;
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
@@ -21,8 +20,8 @@ struct ThreadIdManager {
     free_list: BinaryHeap<Reverse<usize>>,
 }
 impl ThreadIdManager {
-    fn new() -> ThreadIdManager {
-        ThreadIdManager {
+    fn new() -> Self {
+        Self {
             free_from: 0,
             free_list: BinaryHeap::new(),
         }
@@ -31,11 +30,11 @@ impl ThreadIdManager {
         if let Some(id) = self.free_list.pop() {
             id.0
         } else {
+            // `free_from` can't overflow as each thread takes up at least 2 bytes of memory and
+            // thus we can't even have `usize::MAX / 2 + 1` threads.
+
             let id = self.free_from;
-            self.free_from = self
-                .free_from
-                .checked_add(1)
-                .expect("Ran out of thread IDs");
+            self.free_from += 1;
             id
         }
     }
@@ -60,12 +59,12 @@ pub(crate) struct Thread {
     pub(crate) index: usize,
 }
 impl Thread {
-    fn new(id: usize) -> Thread {
-        let bucket = usize::from(POINTER_WIDTH) - id.leading_zeros() as usize;
-        let bucket_size = 1 << bucket.saturating_sub(1);
-        let index = if id != 0 { id ^ bucket_size } else { 0 };
+    fn new(id: usize) -> Self {
+        let bucket = usize::from(POINTER_WIDTH) - ((id + 1).leading_zeros() as usize) - 1;
+        let bucket_size = 1 << bucket;
+        let index = id - (bucket_size - 1);
 
-        Thread {
+        Self {
             id,
             bucket,
             bucket_size,
@@ -184,24 +183,24 @@ fn test_thread() {
     let thread = Thread::new(1);
     assert_eq!(thread.id, 1);
     assert_eq!(thread.bucket, 1);
-    assert_eq!(thread.bucket_size, 1);
+    assert_eq!(thread.bucket_size, 2);
     assert_eq!(thread.index, 0);
 
     let thread = Thread::new(2);
     assert_eq!(thread.id, 2);
-    assert_eq!(thread.bucket, 2);
+    assert_eq!(thread.bucket, 1);
     assert_eq!(thread.bucket_size, 2);
-    assert_eq!(thread.index, 0);
+    assert_eq!(thread.index, 1);
 
     let thread = Thread::new(3);
     assert_eq!(thread.id, 3);
     assert_eq!(thread.bucket, 2);
-    assert_eq!(thread.bucket_size, 2);
-    assert_eq!(thread.index, 1);
+    assert_eq!(thread.bucket_size, 4);
+    assert_eq!(thread.index, 0);
 
     let thread = Thread::new(19);
     assert_eq!(thread.id, 19);
-    assert_eq!(thread.bucket, 5);
+    assert_eq!(thread.bucket, 4);
     assert_eq!(thread.bucket_size, 16);
-    assert_eq!(thread.index, 3);
+    assert_eq!(thread.index, 4);
 }
