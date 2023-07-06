@@ -5,12 +5,12 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+use crate::mutex::Mutex;
 use crate::POINTER_WIDTH;
 use once_cell::sync::Lazy;
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::sync::Mutex;
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
@@ -99,7 +99,7 @@ cfg_if::cfg_if! {
                 unsafe {
                     THREAD = None;
                 }
-                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
+                THREAD_ID_MANAGER.lock().free(self.id.get());
             }
         }
 
@@ -116,7 +116,7 @@ cfg_if::cfg_if! {
         /// Out-of-line slow path for allocating a thread ID.
         #[cold]
          fn get_slow() -> Thread {
-            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            let new = Thread::new(THREAD_ID_MANAGER.lock().alloc());
             unsafe {
                 THREAD = Some(new);
             }
@@ -145,7 +145,7 @@ cfg_if::cfg_if! {
                 // will go through get_slow which will either panic or
                 // initialize a new ThreadGuard.
                 let _ = THREAD.try_with(|thread| thread.set(None));
-                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
+                THREAD_ID_MANAGER.lock().free(self.id.get());
             }
         }
 
@@ -164,7 +164,7 @@ cfg_if::cfg_if! {
         /// Out-of-line slow path for allocating a thread ID.
         #[cold]
         fn get_slow(thread: &Cell<Option<Thread>>) -> Thread {
-            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            let new = Thread::new(THREAD_ID_MANAGER.lock().alloc());
             thread.set(Some(new));
             THREAD_GUARD.with(|guard| guard.id.set(new.id));
             new

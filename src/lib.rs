@@ -68,6 +68,7 @@
 #![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
+mod mutex;
 mod thread_id;
 mod unreachable;
 
