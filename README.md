@@ -1,7 +1,7 @@
 thread_local
 ============
 
-[![Build Status](https://travis-ci.org/Amanieu/thread_local-rs.svg?branch=master)](https://travis-ci.org/Amanieu/thread_local-rs) [![Crates.io](https://img.shields.io/crates/v/thread_local.svg)](https://crates.io/crates/thread_local)
+[![Build Status](https://github.com/Amanieu/thread_local-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Amanieu/thread_local-rs/actions) [![crates.io](https://img.shields.io/crates/v/thread_local.svg)](https://crates.io/crates/thread_local)
 
 This library provides the `ThreadLocal` type which allow a separate copy of an
 object to be used for each thread. This allows for per-object thread-local
