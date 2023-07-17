@@ -15,9 +15,6 @@ rust-version = "1.59"
 # this feature provides performance improvements using nightly features
 nightly = []
 
-[badges]
-travis-ci = { repository = "Amanieu/thread_local-rs" }
-
 [dependencies]
 once_cell = "1.5.2"
 # this is required to gate `nightly` related code paths
