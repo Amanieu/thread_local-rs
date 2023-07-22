@@ -68,6 +68,7 @@
 #![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
+mod mutex;
 mod thread_id;
 mod unreachable;
 
@@ -187,10 +188,11 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
+        if let Some(val) = self.get() {
+            return val;
         }
+
+        self.insert(create)
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -200,12 +202,11 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        let thread = thread_id::get();
-        if let Some(val) = self.get_inner(thread) {
+        if let Some(val) = self.get() {
             return Ok(val);
         }
 
-        Ok(self.insert(create()?))
+        self.insert_maybe(create)
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
@@ -226,14 +227,22 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     #[cold]
-    fn insert(&self, data: T) -> &T {
+    fn insert_maybe<F: FnOnce() -> Result<T, E>, E>(&self, gen: F) -> Result<&T, E> {
+        let data = gen()?;
+        Ok(self.insert(|| data))
+    }
+
+    #[cold]
+    fn insert<F: FnOnce() -> T>(&self, gen: F) -> &T {
+        // call the generator here, so it is #[cold] as well.
+        let data = gen();
         let thread = thread_id::get();
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
         // If the bucket doesn't already exist, we need to allocate it
         let bucket_ptr = if bucket_ptr.is_null() {
-            let new_bucket = allocate_bucket(thread.bucket_size);
+            let new_bucket = allocate_bucket(thread.bucket_size());
 
             match bucket_atomic_ptr.compare_exchange(
                 ptr::null_mut(),
@@ -246,7 +255,7 @@ impl<T: Send> ThreadLocal<T> {
                 // another thread stored a new bucket before we could,
                 // and we can free our bucket and use that one instead
                 Err(bucket_ptr) => {
-                    unsafe { deallocate_bucket(new_bucket, thread.bucket_size) }
+                    unsafe { deallocate_bucket(new_bucket, thread.bucket_size()) }
                     bucket_ptr
                 }
             }
@@ -495,9 +504,7 @@ impl<T: Send> Iterator for IntoIter<T> {
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
-            unsafe {
-                std::mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init()
-            }
+            unsafe { mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init() }
         })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
