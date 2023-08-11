@@ -181,6 +181,11 @@ impl<T: Send> ThreadLocal<T> {
         self.get_inner(thread_id::get())
     }
 
+    /// Returns a mutable element for the current thread, if it exists.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.get_inner_mut(thread_id::get())
+    }
+
     /// Returns the element for the current thread, or creates it if it doesn't
     /// exist.
     pub fn get_or<F>(&self, create: F) -> &T
@@ -219,6 +224,23 @@ impl<T: Send> ThreadLocal<T> {
             // Read without atomic operations as only this thread can set the value.
             if (&entry.present as *const _ as *const bool).read() {
                 Some(&*(&*entry.value.get()).as_ptr())
+            } else {
+                None
+            }
+        }
+    }
+
+    fn get_inner_mut(&mut self, thread: Thread) -> Option<&mut T> {
+        let bucket_ptr =
+            unsafe { self.buckets.get_unchecked_mut(thread.bucket) }.load(Ordering::Acquire);
+        if bucket_ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            let entry = &mut *bucket_ptr.add(thread.index);
+            // Read without atomic operations as only this thread can set the value.
+            if (&entry.present as *const _ as *const bool).read() {
+                Some(&mut *entry.value.get_mut().as_mut_ptr())
             } else {
                 None
             }
@@ -550,6 +572,43 @@ mod tests {
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
+        tls.clear();
+        assert_eq!(None, tls.get());
+    }
+
+    #[test]
+    fn same_thread_mut() {
+        let create = make_create();
+        let mut tls = ThreadLocal::new();
+        assert_eq!(None, tls.get());
+        assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
+        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+
+        tls.get_mut()
+            .and_then(|t| {
+                *t += 1;
+                Some(t)
+            });
+
+        assert_eq!(Some(&1), tls.get());
+
+        tls.get_mut()
+            .and_then(|t| {
+                *t += 1;
+                Some(t)
+            });
+
+        assert_eq!(Some(&2), tls.get());
+
+        tls.get_mut()
+            .and_then(|t| {
+                *t += 1;
+                Some(t)
+            });
+
+        assert_eq!(Some(&3), tls.get());
+        assert_eq!("ThreadLocal { local_data: Some(3) }", format!("{:?}", &tls));
         tls.clear();
         assert_eq!(None, tls.get());
     }
