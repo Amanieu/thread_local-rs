@@ -1,9 +1,8 @@
 #![allow(deprecated)]
 
+use std::{fmt, panic::UnwindSafe, usize};
+
 use super::{IntoIter, IterMut, ThreadLocal};
-use std::fmt;
-use std::panic::UnwindSafe;
-use std::usize;
 
 /// Wrapper around [`ThreadLocal`].
 ///
@@ -81,8 +80,8 @@ impl<T: Send> CachedThreadLocal<T> {
 }
 
 impl<T: Send> IntoIterator for CachedThreadLocal<T> {
-    type Item = T;
     type IntoIter = CachedIntoIter<T>;
+    type Item = T;
 
     fn into_iter(self) -> CachedIntoIter<T> {
         CachedIntoIter {
@@ -92,8 +91,8 @@ impl<T: Send> IntoIterator for CachedThreadLocal<T> {
 }
 
 impl<'a, T: Send + 'a> IntoIterator for &'a mut CachedThreadLocal<T> {
-    type Item = &'a mut T;
     type IntoIter = CachedIterMut<'a, T>;
+    type Item = &'a mut T;
 
     fn into_iter(self) -> CachedIterMut<'a, T> {
         self.iter_mut()

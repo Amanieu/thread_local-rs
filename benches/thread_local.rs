@@ -1,5 +1,4 @@
 use criterion::{black_box, BatchSize};
-
 use thread_local::ThreadLocal;
 
 fn main() {
