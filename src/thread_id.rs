@@ -5,12 +5,11 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use crate::POINTER_WIDTH;
+use std::{cell::Cell, cmp::Reverse, collections::BinaryHeap, sync::Mutex};
+
 use once_cell::sync::Lazy;
-use std::cell::Cell;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::sync::Mutex;
+
+use crate::POINTER_WIDTH;
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
@@ -26,18 +25,20 @@ impl ThreadIdManager {
             free_list: BinaryHeap::new(),
         }
     }
+
     fn alloc(&mut self) -> usize {
         if let Some(id) = self.free_list.pop() {
             id.0
         } else {
-            // `free_from` can't overflow as each thread takes up at least 2 bytes of memory and
-            // thus we can't even have `usize::MAX / 2 + 1` threads.
+            // `free_from` can't overflow as each thread takes up at least 2 bytes of memory
+            // and thus we can't even have `usize::MAX / 2 + 1` threads.
 
             let id = self.free_from;
             self.free_from += 1;
             id
         }
     }
+
     fn free(&mut self, id: usize) {
         self.free_list.push(Reverse(id));
     }

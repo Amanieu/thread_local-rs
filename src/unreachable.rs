@@ -16,7 +16,8 @@ pub trait UncheckedOptionExt<T> {
     unsafe fn unchecked_unwrap_none(self);
 }
 
-/// An extension trait for `Result<T, E>` providing unchecked unwrapping methods.
+/// An extension trait for `Result<T, E>` providing unchecked unwrapping
+/// methods.
 pub trait UncheckedResultExt<T, E> {
     /// Get the value out of this Result without checking for Err.
     unsafe fn unchecked_unwrap_ok(self) -> T;

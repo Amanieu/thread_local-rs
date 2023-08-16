@@ -71,17 +71,19 @@ mod cached;
 mod thread_id;
 mod unreachable;
 
+use std::{
+    cell::UnsafeCell,
+    fmt,
+    iter::FusedIterator,
+    mem,
+    mem::MaybeUninit,
+    panic::UnwindSafe,
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+};
+
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
-
-use std::cell::UnsafeCell;
-use std::fmt;
-use std::iter::FusedIterator;
-use std::mem;
-use std::mem::MaybeUninit;
-use std::panic::UnwindSafe;
-use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
 use unreachable::UncheckedResultExt;
 
@@ -105,8 +107,8 @@ pub struct ThreadLocal<T: Send> {
     /// elements. Each bucket is lazily allocated.
     buckets: [AtomicPtr<Entry<T>>; BUCKETS],
 
-    /// The number of values in the thread local. This can be less than the real number of values,
-    /// but is never more.
+    /// The number of values in the thread local. This can be less than the real
+    /// number of values, but is never more.
     values: AtomicUsize,
 }
 
@@ -143,7 +145,7 @@ impl<T: Send> Drop for ThreadLocal<T> {
             let this_bucket_size = 1 << i;
 
             if bucket_ptr.is_null() {
-                break;
+                break
             }
 
             unsafe { deallocate_bucket(bucket_ptr, this_bucket_size) };
@@ -157,9 +159,9 @@ impl<T: Send> ThreadLocal<T> {
         Self::with_capacity(2)
     }
 
-    /// Creates a new `ThreadLocal` with an initial capacity. If less than the capacity threads
-    /// access the thread local it will never reallocate. The capacity may be rounded up to the
-    /// nearest power of two.
+    /// Creates a new `ThreadLocal` with an initial capacity. If less than the
+    /// capacity threads access the thread local it will never reallocate.
+    /// The capacity may be rounded up to the nearest power of two.
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
         let allocated_buckets = usize::from(POINTER_WIDTH) - (capacity.leading_zeros() as usize);
 
@@ -181,6 +183,11 @@ impl<T: Send> ThreadLocal<T> {
         self.get_inner(thread_id::get())
     }
 
+    /// Returns a mutable element for the current thread, if it exists.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.get_inner_mut(thread_id::get())
+    }
+
     /// Returns the element for the current thread, or creates it if it doesn't
     /// exist.
     pub fn get_or<F>(&self, create: F) -> &T
@@ -189,6 +196,18 @@ impl<T: Send> ThreadLocal<T> {
     {
         unsafe {
             self.get_or_try(|| Ok::<T, ()>(create()))
+                .unchecked_unwrap_ok()
+        }
+    }
+
+    /// Returns a mutable element for the current thread, or creates it if it
+    /// doesn't exist.
+    pub fn get_mut_or<F>(&mut self, create: F) -> &mut T
+    where
+        F: FnOnce() -> T,
+    {
+        unsafe {
+            self.get_mut_or_try(|| Ok::<T, ()>(create()))
                 .unchecked_unwrap_ok()
         }
     }
@@ -202,31 +221,55 @@ impl<T: Send> ThreadLocal<T> {
     {
         let thread = thread_id::get();
         if let Some(val) = self.get_inner(thread) {
-            return Ok(val);
+            return Ok(val)
         }
 
         Ok(self.insert(create()?))
     }
 
-    fn get_inner(&self, thread: Thread) -> Option<&T> {
+    /// Returns a mutable element for the current thread, or creates it if it
+    /// doesn't exist. If `create` fails, that error is returned and no
+    /// element is added.
+    pub fn get_mut_or_try<F, E>(&mut self, create: F) -> Result<&mut T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        let thread = thread_id::get();
+        if let Some(val) = self.get_inner_mut(thread) {
+            return Ok(val)
+        }
+
+        Ok(self.insert_mut(create()?))
+    }
+
+    fn get_inner_ptr(&self, thread: Thread) -> Option<*mut MaybeUninit<T>> {
         let bucket_ptr =
             unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
         if bucket_ptr.is_null() {
-            return None;
+            return None
         }
         unsafe {
             let entry = &*bucket_ptr.add(thread.index);
             // Read without atomic operations as only this thread can set the value.
             if (&entry.present as *const _ as *const bool).read() {
-                Some(&*(&*entry.value.get()).as_ptr())
+                Some(entry.value.get())
             } else {
                 None
             }
         }
     }
 
-    #[cold]
-    fn insert(&self, data: T) -> &T {
+    fn get_inner(&self, thread: Thread) -> Option<&T> {
+        self.get_inner_ptr(thread)
+            .map(|ptr| unsafe { &*(&*ptr).as_ptr() })
+    }
+
+    fn get_inner_mut(&self, thread: Thread) -> Option<&mut T> {
+        self.get_inner_ptr(thread)
+            .map(|ptr| unsafe { &mut *(&mut * ptr).as_mut_ptr() })
+    }
+
+    fn insert_inner(&self, data: T) -> *mut MaybeUninit<T> {
         let thread = thread_id::get();
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
@@ -261,8 +304,19 @@ impl<T: Send> ThreadLocal<T> {
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
+        value_ptr
+    }
 
+    #[cold]
+    fn insert(&self, data: T) -> &T {
+        let value_ptr = self.insert_inner(data);
         unsafe { &*(&*value_ptr).as_ptr() }
+    }
+
+    #[cold]
+    fn insert_mut(&self, data: T) -> &mut T {
+        let value_ptr = self.insert_inner(data);
+        unsafe { &mut *(&mut *value_ptr).as_mut_ptr() }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
@@ -304,8 +358,8 @@ impl<T: Send> ThreadLocal<T> {
 }
 
 impl<T: Send> IntoIterator for ThreadLocal<T> {
-    type Item = T;
     type IntoIter = IntoIter<T>;
+    type Item = T;
 
     fn into_iter(self) -> IntoIter<T> {
         IntoIter {
@@ -316,8 +370,8 @@ impl<T: Send> IntoIterator for ThreadLocal<T> {
 }
 
 impl<'a, T: Send + Sync> IntoIterator for &'a ThreadLocal<T> {
-    type Item = &'a T;
     type IntoIter = Iter<'a, T>;
+    type Item = &'a T;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -325,8 +379,8 @@ impl<'a, T: Send + Sync> IntoIterator for &'a ThreadLocal<T> {
 }
 
 impl<'a, T: Send> IntoIterator for &'a mut ThreadLocal<T> {
-    type Item = &'a mut T;
     type IntoIter = IterMut<'a, T>;
+    type Item = &'a mut T;
 
     fn into_iter(self) -> IterMut<'a, T> {
         self.iter_mut()
@@ -373,7 +427,7 @@ impl RawIter {
             let bucket = bucket.load(Ordering::Acquire);
 
             if bucket.is_null() {
-                return None;
+                return None
             }
 
             while self.index < self.bucket_size {
@@ -381,7 +435,7 @@ impl RawIter {
                 self.index += 1;
                 if entry.present.load(Ordering::Acquire) {
                     self.yielded += 1;
-                    return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
+                    return Some(unsafe { &*(&*entry.value.get()).as_ptr() })
                 }
             }
 
@@ -389,12 +443,13 @@ impl RawIter {
         }
         None
     }
+
     fn next_mut<'a, T: Send>(
         &mut self,
         thread_local: &'a mut ThreadLocal<T>,
     ) -> Option<&'a mut Entry<T>> {
         if *thread_local.values.get_mut() == self.yielded {
-            return None;
+            return None
         }
 
         loop {
@@ -402,7 +457,7 @@ impl RawIter {
             let bucket = *bucket.get_mut();
 
             if bucket.is_null() {
-                return None;
+                return None
             }
 
             while self.index < self.bucket_size {
@@ -410,7 +465,7 @@ impl RawIter {
                 self.index += 1;
                 if *entry.present.get_mut() {
                     self.yielded += 1;
-                    return Some(entry);
+                    return Some(entry)
                 }
             }
 
@@ -429,6 +484,7 @@ impl RawIter {
         let total = thread_local.values.load(Ordering::Acquire);
         (total - self.yielded, None)
     }
+
     fn size_hint_frozen<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
         let total = unsafe { *(&thread_local.values as *const AtomicUsize as *const usize) };
         let remaining = total - self.yielded;
@@ -445,9 +501,11 @@ pub struct Iter<'a, T: Send + Sync> {
 
 impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
     type Item = &'a T;
+
     fn next(&mut self) -> Option<Self::Item> {
         self.raw.next(self.thread_local)
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint(self.thread_local)
     }
@@ -462,11 +520,13 @@ pub struct IterMut<'a, T: Send> {
 
 impl<'a, T: Send> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
+
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next_mut(self.thread_local)
             .map(|entry| unsafe { &mut *(&mut *entry.value.get()).as_mut_ptr() })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(self.thread_local)
     }
@@ -475,8 +535,9 @@ impl<'a, T: Send> Iterator for IterMut<'a, T> {
 impl<T: Send> ExactSizeIterator for IterMut<'_, T> {}
 impl<T: Send> FusedIterator for IterMut<'_, T> {}
 
-// Manual impl so we don't call Debug on the ThreadLocal, as doing so would create a reference to
-// this thread's value that potentially aliases with a mutable reference we have given out.
+// Manual impl so we don't call Debug on the ThreadLocal, as doing so would
+// create a reference to this thread's value that potentially aliases with a
+// mutable reference we have given out.
 impl<'a, T: Send + fmt::Debug> fmt::Debug for IterMut<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IterMut").field("raw", &self.raw).finish()
@@ -492,6 +553,7 @@ pub struct IntoIter<T: Send> {
 
 impl<T: Send> Iterator for IntoIter<T> {
     type Item = T;
+
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
@@ -500,6 +562,7 @@ impl<T: Send> Iterator for IntoIter<T> {
             }
         })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(&self.thread_local)
     }
@@ -525,12 +588,16 @@ unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        cell::RefCell,
+        sync::{
+            atomic::{AtomicUsize, Ordering::Relaxed},
+            Arc,
+        },
+        thread,
+    };
+
     use super::ThreadLocal;
-    use std::cell::RefCell;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
-    use std::thread;
 
     fn make_create() -> Arc<dyn Fn() -> usize + Send + Sync> {
         let count = AtomicUsize::new(0);
@@ -550,6 +617,40 @@ mod tests {
         assert_eq!(0, *tls.get_or(|| create()));
         assert_eq!(Some(&0), tls.get());
         assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
+        tls.clear();
+        assert_eq!(None, tls.get());
+    }
+
+    #[test]
+    fn same_thread_mut() {
+        let create = make_create();
+        let mut tls = ThreadLocal::new();
+        assert_eq!(None, tls.get());
+        assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
+        assert_eq!(0, *tls.get_mut_or(|| create()));
+        assert_eq!(Some(&0), tls.get());
+
+        tls.get_mut().and_then(|t| {
+            *t += 1;
+            Some(t)
+        });
+
+        assert_eq!(Some(&1), tls.get());
+
+        tls.get_mut().and_then(|t| {
+            *t += 1;
+            Some(t)
+        });
+
+        assert_eq!(Some(&2), tls.get());
+
+        tls.get_mut().and_then(|t| {
+            *t += 1;
+            Some(t)
+        });
+
+        assert_eq!(Some(&3), tls.get());
+        assert_eq!("ThreadLocal { local_data: Some(3) }", format!("{:?}", &tls));
         tls.clear();
         assert_eq!(None, tls.get());
     }
