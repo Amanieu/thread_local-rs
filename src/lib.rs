@@ -627,7 +627,7 @@ mod tests {
         let mut tls = ThreadLocal::new();
         assert_eq!(None, tls.get());
         assert_eq!("ThreadLocal { local_data: None }", format!("{:?}", &tls));
-        assert_eq!(0, *tls.get_or(|| create()));
+        assert_eq!(0, *tls.get_mut_or(|| create()));
         assert_eq!(Some(&0), tls.get());
 
         tls.get_mut().and_then(|t| {
