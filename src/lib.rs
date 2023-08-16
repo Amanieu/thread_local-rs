@@ -235,17 +235,14 @@ impl<T: Send> ThreadLocal<T> {
         F: FnOnce() -> Result<T, E>,
     {
         let thread = thread_id::get();
-
-        // A workaround to avoid having two mutable references to self
-        if self.get_inner(thread).is_some() {
-            return Ok(self.get_inner_mut(thread).expect("tls not intialised"))
+        if let Some(val) = self.get_inner_mut(thread) {
+            return Ok(val)
         }
 
-        let _ = self.insert(create()?);
-        Ok(self.get_inner_mut(thread).expect("tls not intialised"))
+        Ok(self.insert_mut(create()?))
     }
 
-    fn get_inner(&self, thread: Thread) -> Option<&T> {
+    fn get_inner_ptr(&self, thread: Thread) -> Option<*mut MaybeUninit<T>> {
         let bucket_ptr =
             unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
         if bucket_ptr.is_null() {
@@ -255,32 +252,24 @@ impl<T: Send> ThreadLocal<T> {
             let entry = &*bucket_ptr.add(thread.index);
             // Read without atomic operations as only this thread can set the value.
             if (&entry.present as *const _ as *const bool).read() {
-                Some(&*(&*entry.value.get()).as_ptr())
+                Some(entry.value.get())
             } else {
                 None
             }
         }
     }
 
-    fn get_inner_mut(&mut self, thread: Thread) -> Option<&mut T> {
-        let bucket_ptr =
-            unsafe { self.buckets.get_unchecked_mut(thread.bucket) }.load(Ordering::Acquire);
-        if bucket_ptr.is_null() {
-            return None
-        }
-        unsafe {
-            let entry = &mut *bucket_ptr.add(thread.index);
-            // Read without atomic operations as only this thread can set the value.
-            if (&entry.present as *const _ as *const bool).read() {
-                Some(&mut *entry.value.get_mut().as_mut_ptr())
-            } else {
-                None
-            }
-        }
+    fn get_inner(&self, thread: Thread) -> Option<&T> {
+        self.get_inner_ptr(thread)
+            .map(|ptr| unsafe { &*(&*ptr).as_ptr() })
     }
 
-    #[cold]
-    fn insert(&self, data: T) -> &T {
+    fn get_inner_mut(&self, thread: Thread) -> Option<&mut T> {
+        self.get_inner_ptr(thread)
+            .map(|ptr| unsafe { &mut *(&mut * ptr).as_mut_ptr() })
+    }
+
+    fn insert_inner(&self, data: T) -> *mut MaybeUninit<T> {
         let thread = thread_id::get();
         let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
@@ -315,8 +304,19 @@ impl<T: Send> ThreadLocal<T> {
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
+        value_ptr
+    }
 
+    #[cold]
+    fn insert(&self, data: T) -> &T {
+        let value_ptr = self.insert_inner(data);
         unsafe { &*(&*value_ptr).as_ptr() }
+    }
+
+    #[cold]
+    fn insert_mut(&self, data: T) -> &mut T {
+        let value_ptr = self.insert_inner(data);
+        unsafe { &mut *(&mut *value_ptr).as_mut_ptr() }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
