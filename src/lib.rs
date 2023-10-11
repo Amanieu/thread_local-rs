@@ -69,12 +69,12 @@
 
 mod cached;
 mod thread_id;
-mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 
 use std::cell::UnsafeCell;
+use std::convert::Infallible;
 use std::fmt;
 use std::iter::FusedIterator;
 use std::mem;
@@ -83,7 +83,6 @@ use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
-use unreachable::UncheckedResultExt;
 
 // Use usize::BITS once it has stabilized and the MSRV has been bumped.
 #[cfg(target_pointer_width = "16")]
@@ -187,9 +186,9 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
+        match self.get_or_try(|| Ok::<T, Infallible>(create())) {
+            Ok(val) => val,
+            Err(inf) => match inf {},
         }
     }
 
