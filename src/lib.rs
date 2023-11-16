@@ -68,7 +68,6 @@
 
 mod cached;
 mod thread_id;
-mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
@@ -82,7 +81,6 @@ use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
-use unreachable::UncheckedResultExt;
 
 const POINTER_WIDTH: u8 = usize::BITS as u8;
 
@@ -180,10 +178,7 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
-        }
+        unsafe { self.get_or_try(|| Ok::<T, ()>(create())).unwrap_unchecked() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
