@@ -85,13 +85,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
 use unreachable::UncheckedResultExt;
 
-// Use usize::BITS once it has stabilized and the MSRV has been bumped.
-#[cfg(target_pointer_width = "16")]
-const POINTER_WIDTH: u8 = 16;
-#[cfg(target_pointer_width = "32")]
-const POINTER_WIDTH: u8 = 32;
-#[cfg(target_pointer_width = "64")]
-const POINTER_WIDTH: u8 = 64;
+const POINTER_WIDTH: u8 = usize::BITS as u8;
 
 /// The total number of buckets stored in each thread local.
 /// All buckets combined can hold up to `usize::MAX - 1` entries.
