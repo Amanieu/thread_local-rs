@@ -216,8 +216,7 @@ impl<T: Send> ThreadLocal<T> {
         }
         unsafe {
             let entry = &*bucket_ptr.add(thread.index);
-            // Read without atomic operations as only this thread can set the value.
-            if (&entry.present as *const _ as *const bool).read() {
+            if entry.present.load(Ordering::Acquire) {
                 Some(&*(&*entry.value.get()).as_ptr())
             } else {
                 None
