@@ -529,6 +529,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
+    use std::hint::black_box;
     use std::thread;
 
     fn make_create() -> Arc<dyn Fn() -> usize + Send + Sync> {
@@ -607,6 +608,28 @@ mod tests {
         let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
         v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
+    }
+
+    #[test]
+    fn miri_iter_soundness_check() {
+        let tls = Arc::new(ThreadLocal::new());
+        let _local = tls.get_or(|| Box::new(1));
+
+        let tls2 = tls.clone();
+        let join_1 = thread::spawn(move || {
+            let _tls = tls2.get_or(|| Box::new(2));
+            let iter = tls2.iter();
+            for item in iter {
+                black_box(item);
+            }
+        });
+
+        let iter = tls.iter();
+        for item in iter {
+            black_box(item);
+        }
+
+        join_1.join().ok();
     }
 
     #[test]
