@@ -59,7 +59,7 @@ pub(crate) struct Thread {
     pub(crate) index: usize,
 }
 impl Thread {
-    fn new(id: usize) -> Self {
+    pub(crate) fn new(id: usize) -> Self {
         let bucket = usize::from(POINTER_WIDTH) - ((id + 1).leading_zeros() as usize) - 1;
         let bucket_size = 1 << bucket;
         let index = id - (bucket_size - 1);
