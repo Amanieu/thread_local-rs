@@ -216,8 +216,7 @@ impl<T: Send> ThreadLocal<T> {
         }
         unsafe {
             let entry = &*bucket_ptr.add(thread.index);
-            // Read without atomic operations as only this thread can set the value.
-            if (&entry.present as *const _ as *const bool).read() {
+            if entry.present.load(Ordering::Relaxed) {
                 Some(&*(&*entry.value.get()).as_ptr())
             } else {
                 None
@@ -604,6 +603,28 @@ mod tests {
         let mut v = tls.into_iter().map(|x| *x).collect::<Vec<i32>>();
         v.sort_unstable();
         assert_eq!(vec![1, 2, 3], v);
+    }
+
+    #[test]
+    fn miri_iter_soundness_check() {
+        let tls = Arc::new(ThreadLocal::new());
+        let _local = tls.get_or(|| Box::new(1));
+
+        let tls2 = tls.clone();
+        let join_1 = thread::spawn(move || {
+            let _tls = tls2.get_or(|| Box::new(2));
+            let iter = tls2.iter();
+            for item in iter {
+                println!("{:?}", item);
+            }
+        });
+
+        let iter = tls.iter();
+        for item in iter {
+            println!("{:?}", item);
+        }
+
+        join_1.join().ok();
     }
 
     #[test]
