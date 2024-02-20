@@ -216,7 +216,7 @@ impl<T: Send> ThreadLocal<T> {
         }
         unsafe {
             let entry = &*bucket_ptr.add(thread.index);
-            if entry.present.load(Ordering::Acquire) {
+            if entry.present.load(Ordering::Relaxed) {
                 Some(&*(&*entry.value.get()).as_ptr())
             } else {
                 None
@@ -526,10 +526,10 @@ unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
 mod tests {
     use super::ThreadLocal;
     use std::cell::RefCell;
+    use std::hint::black_box;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
-    use std::hint::black_box;
     use std::thread;
 
     fn make_create() -> Arc<dyn Fn() -> usize + Send + Sync> {
