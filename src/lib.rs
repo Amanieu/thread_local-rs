@@ -153,8 +153,12 @@ impl<T: Send> Drop for ThreadLocal<T> {
 
 impl<T: Send> ThreadLocal<T> {
     /// Creates a new empty `ThreadLocal`.
-    pub fn new() -> ThreadLocal<T> {
-        Self::with_capacity(2)
+    pub const fn new() -> ThreadLocal<T> {
+        let buckets = [ptr::null_mut::<Entry<T>>(); BUCKETS];
+        Self {
+            buckets: unsafe { mem::transmute(buckets) },
+            values: AtomicUsize::new(0),
+        }
     }
 
     /// Creates a new `ThreadLocal` with an initial capacity. If less than the capacity threads
