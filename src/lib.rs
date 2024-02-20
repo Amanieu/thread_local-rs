@@ -526,7 +526,6 @@ unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
 mod tests {
     use super::ThreadLocal;
     use std::cell::RefCell;
-    use std::hint::black_box;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
@@ -620,13 +619,13 @@ mod tests {
             let _tls = tls2.get_or(|| Box::new(2));
             let iter = tls2.iter();
             for item in iter {
-                black_box(item);
+                println!("{:?}", item);
             }
         });
 
         let iter = tls.iter();
         for item in iter {
-            black_box(item);
+            println!("{:?}", item);
         }
 
         join_1.join().ok();
