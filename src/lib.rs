@@ -40,25 +40,24 @@
 //!
 //! ```rust
 //! use thread_local::ThreadLocal;
-//! use std::sync::Arc;
 //! use std::cell::Cell;
 //! use std::thread;
 //!
-//! let tls = Arc::new(ThreadLocal::new());
+//! let tls = ThreadLocal::new();
 //!
 //! // Create a bunch of threads to do stuff
-//! for _ in 0..5 {
-//!     let tls2 = tls.clone();
-//!     thread::spawn(move || {
-//!         // Increment a counter to count some event...
-//!         let cell = tls2.get_or(|| Cell::new(0));
-//!         cell.set(cell.get() + 1);
-//!     }).join().unwrap();
-//! }
+//! thread::scope(|scope| {
+//!     for _ in 0..5 {
+//!         scope.spawn(|| {
+//!             // Increment a counter to count some event...
+//!             let cell = tls.get_or(|| Cell::new(0));
+//!             cell.set(cell.get() + 1);
+//!         });
+//!     }
+//! });
 //!
 //! // Once all threads are done, collect the counter values and return the
 //! // sum of all thread-local counter values.
-//! let tls = Arc::try_unwrap(tls).unwrap();
 //! let total = tls.into_iter().fold(0, |x, y| x + y.get());
 //! assert_eq!(total, 5);
 //! ```
@@ -69,7 +68,6 @@
 
 mod cached;
 mod thread_id;
-mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
@@ -83,15 +81,8 @@ use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
-use unreachable::UncheckedResultExt;
 
-// Use usize::BITS once it has stabilized and the MSRV has been bumped.
-#[cfg(target_pointer_width = "16")]
-const POINTER_WIDTH: u8 = 16;
-#[cfg(target_pointer_width = "32")]
-const POINTER_WIDTH: u8 = 32;
-#[cfg(target_pointer_width = "64")]
-const POINTER_WIDTH: u8 = 64;
+const POINTER_WIDTH: u8 = usize::BITS as u8;
 
 /// The total number of buckets stored in each thread local.
 /// All buckets combined can hold up to `usize::MAX - 1` entries.
@@ -191,10 +182,7 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
-        }
+        unsafe { self.get_or_try(|| Ok::<T, ()>(create())).unwrap_unchecked() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
