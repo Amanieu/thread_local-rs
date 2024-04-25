@@ -420,7 +420,6 @@ version = "1.1.8"
 dependencies = [
  "cfg-if",
  "criterion",
- "once_cell",
 ]
 
 [[package]]
