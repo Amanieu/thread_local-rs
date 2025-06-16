@@ -69,7 +69,7 @@ impl<T: Send> CachedThreadLocal<T> {
     }
 
     /// Removes all thread-specific values from the `ThreadLocal`, effectively
-    /// reseting it to its original state.
+    /// resetting it to its original state.
     ///
     /// Since this call borrows the `ThreadLocal` mutably, this operation can
     /// be done safely---the mutable borrow statically guarantees no other
