@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.10](https://github.com/Amanieu/thread_local-rs/compare/v1.1.9...v1.1.10) - 2025-06-16
+
+### Other
+
+- Update cached.rs
+- Update lib.rs
+
 ## [1.1.9](https://github.com/Amanieu/thread_local-rs/compare/v1.1.8...v1.1.9) - 2025-06-12
 
 ### Other
