@@ -182,7 +182,7 @@ impl<T: Send> ThreadLocal<T> {
 
     /// Returns the element for the current thread, if it exists.
     pub fn get(&self) -> Option<&T> {
-        self.get_inner(thread_id::get())
+        thread_id::try_get().and_then(|id| self.get_inner(id))
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't

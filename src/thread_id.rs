@@ -107,6 +107,13 @@ cfg_if::cfg_if! {
             }
         }
 
+        /// Returns a thread ID for the current thread, **not** allocating one if needed.
+        /// This avoids registering a thread-local destructor.
+        #[inline]
+        pub(crate) fn try_get() -> Option<Thread> {
+            unsafe { THREAD }
+        }
+
         /// Returns a thread ID for the current thread, allocating one if needed.
         #[inline]
         pub(crate) fn get() -> Thread {
@@ -151,6 +158,13 @@ cfg_if::cfg_if! {
                 let _ = THREAD.try_with(|thread| thread.set(None));
                 THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
             }
+        }
+
+        /// Returns a thread ID for the current thread, **not** allocating one if needed.
+        /// This avoids registering a thread-local destructor.
+        #[inline]
+        pub(crate) fn try_get() -> Option<Thread> {
+            THREAD.with(|thread| thread.get())
         }
 
         /// Returns a thread ID for the current thread, allocating one if needed.
