@@ -1,0 +1,23 @@
+[package]
+name = "benches"
+edition = "2024"
+description = "Benchmarks that test Bevy's performance"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+criterion = { version = "0.6.0", features = ["html_reports"] }
+
+[dev-dependencies]
+thread_local = { path = ".." }
+
+[lib]
+# This fixes the "Unrecognized Option" error when running commands like
+# `cargo bench -- --save-baseline before` by disabling the default benchmark harness.
+# See <https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options>
+# for more information.
+bench = false
+
+[[bench]]
+name = "thread_local"
+harness = false
