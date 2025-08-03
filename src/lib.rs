@@ -181,10 +181,7 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unwrap_unchecked()
-        }
+        unsafe { self.get_or_try(|| Ok::<T, ()>(create())).unwrap_unchecked() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
