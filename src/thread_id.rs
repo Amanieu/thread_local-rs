@@ -5,7 +5,6 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use crate::POINTER_WIDTH;
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -64,7 +63,7 @@ pub(crate) struct Thread {
 }
 impl Thread {
     pub(crate) fn new(id: usize) -> Self {
-        let bucket = usize::from(POINTER_WIDTH) - ((id + 1).leading_zeros() as usize) - 1;
+        let bucket = (usize::BITS as usize) - ((id + 1).leading_zeros() as usize) - 1;
         let bucket_size = 1 << bucket;
         let index = id - (bucket_size - 1);
 
@@ -78,7 +77,7 @@ impl Thread {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "nightly")] {
+    if #[cfg(all(feature = "nightly"))] {
         // This is split into 2 thread-local variables so that we can check whether the
         // thread is initialized without having to register a thread-local destructor.
         //

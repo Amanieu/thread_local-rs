@@ -69,7 +69,6 @@
 
 mod cached;
 mod thread_id;
-mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
@@ -83,19 +82,10 @@ use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
-use unreachable::UncheckedResultExt;
-
-// Use usize::BITS once it has stabilized and the MSRV has been bumped.
-#[cfg(target_pointer_width = "16")]
-const POINTER_WIDTH: u8 = 16;
-#[cfg(target_pointer_width = "32")]
-const POINTER_WIDTH: u8 = 32;
-#[cfg(target_pointer_width = "64")]
-const POINTER_WIDTH: u8 = 64;
 
 /// The total number of buckets stored in each thread local.
 /// All buckets combined can hold up to `usize::MAX - 1` entries.
-const BUCKETS: usize = (POINTER_WIDTH - 1) as usize;
+const BUCKETS: usize = (usize::BITS - 1) as usize;
 
 /// Thread-local variable wrapper
 ///
@@ -165,7 +155,7 @@ impl<T: Send> ThreadLocal<T> {
     /// access the thread local it will never reallocate. The capacity may be rounded up to the
     /// nearest power of two.
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
-        let allocated_buckets = usize::from(POINTER_WIDTH) - (capacity.leading_zeros() as usize);
+        let allocated_buckets = (usize::BITS - capacity.leading_zeros()) as usize;
 
         let mut buckets = [ptr::null_mut(); BUCKETS];
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
@@ -193,7 +183,7 @@ impl<T: Send> ThreadLocal<T> {
     {
         unsafe {
             self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
+                .unwrap_unchecked()
         }
     }
 
@@ -287,7 +277,7 @@ impl<T: Send> ThreadLocal<T> {
     /// Since this call borrows the `ThreadLocal` mutably, this operation can
     /// be done safely---the mutable borrow statically guarantees no other
     /// threads are currently accessing their associated values.
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             thread_local: self,
             raw: RawIter::new(),
