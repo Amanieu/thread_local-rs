@@ -1,9 +1,10 @@
 [package]
 name = "benches"
-edition = "2024"
-description = "Benchmarks that test Bevy's performance"
+description = "Benchmarks that test thread_local's performance"
 publish = false
+version = "0.1.0"
 license = "MIT OR Apache-2.0"
+edition = "2021"
 
 [dependencies]
 criterion = { version = "0.6.0", features = ["html_reports"] }
