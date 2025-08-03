@@ -208,7 +208,7 @@ impl<T: Send> ThreadLocal<T> {
         unsafe {
             let entry = &*bucket_ptr.add(thread.index);
             if entry.present.load(Ordering::Relaxed) {
-                Some(&*(&*entry.value.get()).as_ptr())
+                Some((&*entry.value.get()).assume_init_ref())
             } else {
                 None
             }
@@ -251,7 +251,7 @@ impl<T: Send> ThreadLocal<T> {
 
         self.values.fetch_add(1, Ordering::Release);
 
-        unsafe { &*(&*value_ptr).as_ptr() }
+        unsafe { (&*value_ptr).assume_init_ref() }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
@@ -367,7 +367,7 @@ impl RawIter {
                     self.index += 1;
                     if entry.present.load(Ordering::Acquire) {
                         self.yielded += 1;
-                        return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
+                        return Some(unsafe { (&*entry.value.get()).assume_init_ref() });
                     }
                 }
             }
@@ -450,7 +450,7 @@ impl<'a, T: Send> Iterator for IterMut<'a, T> {
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next_mut(self.thread_local)
-            .map(|entry| unsafe { &mut *(&mut *entry.value.get()).as_mut_ptr() })
+            .map(|entry| unsafe { (&mut *entry.value.get()).assume_init_mut() })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(self.thread_local)
