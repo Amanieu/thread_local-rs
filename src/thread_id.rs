@@ -64,16 +64,15 @@ impl Thread {
         let bucket_size = 1 << bucket;
         let index = id - (bucket_size - 1);
 
-        Self {
-            bucket,
-            index,
-        }
+        Self { bucket, index }
     }
 
+    /// The size of the bucket this thread's local storage will be in.
     pub(crate) fn bucket_size(&self) -> usize {
         1 << self.bucket
     }
 
+    /// The thread ID obtained from the thread ID manager.
     pub(crate) fn id(&self) -> usize {
         self.index + (self.bucket_size() - 1)
     }
