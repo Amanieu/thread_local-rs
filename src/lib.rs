@@ -64,7 +64,8 @@
 //! ```
 
 #![warn(missing_docs)]
-#![allow(clippy::mutex_atomic)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
@@ -246,11 +247,13 @@ impl<T: Send> ThreadLocal<T> {
         // Insert the new element into the bucket
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
         let value_ptr = entry.value.get();
+        // SAFETY: The value was just initialized to the provided value.
         unsafe { value_ptr.write(MaybeUninit::new(data)) };
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
 
+        // SAFETY: The value was just initialized to the provided value.
         unsafe { (&*value_ptr).assume_init_ref() }
     }
 
@@ -358,6 +361,9 @@ impl RawIter {
 
     fn next<'a, T: Send + Sync>(&mut self, thread_local: &'a ThreadLocal<T>) -> Option<&'a T> {
         while self.bucket < BUCKETS {
+            // SAFETY: The while loop condition check ensures that self.bucket will never be 
+            // out of bounds for `buckets`, thus the result of get_unchecked_mut
+            // must be valid for all possible values of self.bucket.
             let bucket = unsafe { thread_local.buckets.get_unchecked(self.bucket) };
             let bucket = bucket.load(Ordering::Acquire);
 
@@ -367,6 +373,12 @@ impl RawIter {
                     self.index += 1;
                     if entry.present.load(Ordering::Acquire) {
                         self.yielded += 1;
+                        // SAFETY: As Iter has a read-only borrow on the ThreadLocal,
+                        // no mutable borrows on the values stored inside can exist at
+                        // the same time.
+                        //
+                        // The above present check is properly synchronized and ensures
+                        // that the value has been properly initialized.
                         return Some(unsafe { (&*entry.value.get()).assume_init_ref() });
                     }
                 }
@@ -385,6 +397,9 @@ impl RawIter {
         }
 
         loop {
+            // SAFETY: The above if check will evaluate to true before self.bucket grows
+            // large enough to be bigger than BUCKETS, thus the result of get_unchecked_mut
+            // must be valid for all possible values of self.bucket.
             let bucket = unsafe { thread_local.buckets.get_unchecked_mut(self.bucket) };
             let bucket = *bucket.get_mut();
 
@@ -414,8 +429,9 @@ impl RawIter {
         let total = thread_local.values.load(Ordering::Acquire);
         (total - self.yielded, None)
     }
+
     fn size_hint_frozen<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
-        let total = unsafe { *(&thread_local.values as *const AtomicUsize as *const usize) };
+        let total = thread_local.values.load(Ordering::Acquire);
         let remaining = total - self.yielded;
         (remaining, Some(remaining))
     }
@@ -450,6 +466,9 @@ impl<'a, T: Send> Iterator for IterMut<'a, T> {
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next_mut(self.thread_local)
+            // SAFETY: IterMut has exclusive access to the underlying ThreadLocal
+            // and if RawIter::next_mut returns an entry, it's guaranteed to have
+            // been initialized.
             .map(|entry| unsafe { (&mut *entry.value.get()).assume_init_mut() })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -480,9 +499,13 @@ impl<T: Send> Iterator for IntoIter<T> {
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
-            unsafe {
-                std::mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init()
-            }
+            // SAFETY: IntoIter owns the ThreadLocal and has exclusive access to it
+            // and the values stored within.
+            let cell = unsafe { &mut *entry.value.get() };
+            let old_value = std::mem::replace(cell, MaybeUninit::uninit());
+            // SAFETY: If RawIter returned a non-None result, it means this cell was
+            // previously populated and thus has been initialized.
+            unsafe { old_value.assume_init() }
         })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -504,8 +527,22 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
     ) as *mut _
 }
 
+/// # Safety
+/// The caller must ensure that `bucket` was allocated from [allocate_bucket] 
+/// with the same `size` parameter.
 unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
-    let _ = Box::from_raw(std::slice::from_raw_parts_mut(bucket, size));
+    // SAFETY: The caller ensures that the bucket pointer and size come from a 
+    // corresponding call to `allocate_bucket` with an identical size, and thus:
+    //  * `bucket` must not be null.
+    //  * `size` must match the same length as when the bucket was allocated.
+    //  * `bucket` points to a slice of properly initialized `Entry<T>`.
+    //  * The total size of the allocation cannot be larger than isize::MAX
+    //    bytes or the allocation would have failed and panicked.
+    let slice = unsafe { std::slice::from_raw_parts_mut(bucket, size) };
+    // SAFETY: It's the caller's responsibliity that the bucket was created
+    // from `allocate_bucket`, which ensures that it was allocated using the
+    // global allocator.
+    drop(unsafe { Box::from_raw(slice) });
 }
 
 #[cfg(test)]
