@@ -124,7 +124,7 @@ impl<T> Entry<T> {
 
 impl<T> Drop for Entry<T> {
     fn drop(&mut self) {
-        if std::mem::needs_drop::<T>() && *self.present.get_mut() {
+        if *self.present.get_mut() {
             // SAFETY:
             //  * If `present` is true, then the value was properly initalized.
             //    and never dropped before.
