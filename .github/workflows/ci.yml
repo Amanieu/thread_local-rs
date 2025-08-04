@@ -13,7 +13,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt -- --check
-      - run: cargo clippy 
+      - run: cargo clippy -- -D warnings
       - run: cargo test
       - run: cd benches && cargo bench
   msrv:
