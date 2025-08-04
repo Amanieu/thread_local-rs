@@ -259,23 +259,23 @@ impl<T: Send> ThreadLocal<T> {
         let bucket_ptr = if bucket_ptr.is_null() {
             let new_bucket = allocate_bucket(thread.bucket_size);
 
-            bucket_atomic_ptr
-                .compare_exchange(
-                    ptr::null_mut(),
-                    new_bucket,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .unwrap_or_else(|bucket_ptr| {
-                    // If the bucket value changed (from null), that means
-                    // another thread stored a new bucket before we could,
-                    // and we can free our bucket and use that one instead
-
+            match bucket_atomic_ptr.compare_exchange(
+                ptr::null_mut(),
+                new_bucket,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => new_bucket,
+                // If the bucket value changed (from null), that means
+                // another thread stored a new bucket before we could,
+                // and we can free our bucket and use that one instead
+                Err(bucket_ptr) => {
                     // SAFETY: This bucket was just allocated from the call
                     // allocate_bucket above, and using the same bucket size.
                     unsafe { deallocate_bucket(new_bucket, thread.bucket_size) }
                     bucket_ptr
-                })
+                }
+            }
         } else {
             bucket_ptr
         };
