@@ -257,7 +257,7 @@ impl<T: Send> ThreadLocal<T> {
 
         // If the bucket doesn't already exist, we need to allocate it
         let bucket_ptr = if bucket_ptr.is_null() {
-            let new_bucket = allocate_bucket(thread.bucket_size);
+            let new_bucket = allocate_bucket(thread.bucket_size());
 
             match bucket_atomic_ptr.compare_exchange(
                 ptr::null_mut(),
@@ -272,7 +272,7 @@ impl<T: Send> ThreadLocal<T> {
                 Err(bucket_ptr) => {
                     // SAFETY: This bucket was just allocated from the call
                     // allocate_bucket above, and using the same bucket size.
-                    unsafe { deallocate_bucket(new_bucket, thread.bucket_size) }
+                    unsafe { deallocate_bucket(new_bucket, thread.bucket_size()) }
                     bucket_ptr
                 }
             }
