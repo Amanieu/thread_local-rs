@@ -77,7 +77,6 @@ pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
-use std::mem;
 use std::mem::MaybeUninit;
 use std::panic::UnwindSafe;
 use std::ptr;
@@ -132,7 +131,7 @@ impl<T> Drop for Entry<T> {
             //    pointer must be properly aligned and non-null, even if T is
             //    a ZST.
             unsafe {
-                ptr::drop_in_place::<T>((*self.value.get()).as_mut_ptr());
+                MaybeUninit::assume_init_drop(&mut *self.value.get());
             }
         }
     }
@@ -168,13 +167,8 @@ impl<T: Send> Drop for ThreadLocal<T> {
 impl<T: Send> ThreadLocal<T> {
     /// Creates a new empty `ThreadLocal`.
     pub const fn new() -> ThreadLocal<T> {
-        let buckets = [ptr::null_mut::<Entry<T>>(); BUCKETS];
         Self {
-            // SAFETY: AtomicPtr has the same representation as a pointer and arrays have the same
-            // representation as a sequence of their inner type.
-            buckets: unsafe {
-                mem::transmute::<[*mut Entry<T>; BUCKETS], [AtomicPtr<Entry<T>>; BUCKETS]>(buckets)
-            },
+            buckets: [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS],
             values: AtomicUsize::new(0),
         }
     }
@@ -185,17 +179,13 @@ impl<T: Send> ThreadLocal<T> {
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
         let allocated_buckets = (usize::BITS - capacity.leading_zeros()) as usize;
 
-        let mut buckets = [ptr::null_mut(); BUCKETS];
+        let mut buckets = [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS];
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
-            *bucket = allocate_bucket::<T>(1 << i);
+            *bucket = AtomicPtr::new(allocate_bucket::<T>(1 << i));
         }
 
         Self {
-            // SAFETY: AtomicPtr has the same representation as a pointer and arrays have the same
-            // representation as a sequence of their inner type.
-            buckets: unsafe {
-                mem::transmute::<[*mut Entry<T>; BUCKETS], [AtomicPtr<Entry<T>>; BUCKETS]>(buckets)
-            },
+            buckets,
             values: AtomicUsize::new(0),
         }
     }
@@ -231,9 +221,7 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
-        let bucket_ptr =
-            // SAFETY: Thread::bucket can never be BUCKETS or larger, and thus must be a valid offset.
-            unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
+        let bucket_ptr =self.get_bucket(thread).load(Ordering::Acquire);
         if bucket_ptr.is_null() {
             return None;
         }
@@ -251,8 +239,7 @@ impl<T: Send> ThreadLocal<T> {
 
     #[cold]
     fn insert(&self, thread: Thread, data: T) -> &T {
-        // SAFETY: Thread::bucket can never be BUCKETS or larger, and thus must be a valid offset.
-        let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
+        let bucket_atomic_ptr = self.get_bucket(thread);
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
         // If the bucket doesn't already exist, we need to allocate it
@@ -301,6 +288,12 @@ impl<T: Send> ThreadLocal<T> {
 
         // SAFETY: The value was just initialized to the provided value.
         unsafe { (&*value_ptr).assume_init_ref() }
+    }
+
+    #[inline]
+    fn get_bucket(&self, thread: Thread) -> &AtomicPtr<Entry<T>> {
+        // SAFETY: Thread::bucket can never be BUCKETS or larger, and thus must be a valid offset.
+        unsafe { self.buckets.get_unchecked(thread.bucket) }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
@@ -394,6 +387,7 @@ struct RawIter {
     bucket_size: usize,
     index: usize,
 }
+
 impl RawIter {
     #[inline]
     fn new() -> Self {
@@ -406,11 +400,7 @@ impl RawIter {
     }
 
     fn next<'a, T: Send + Sync>(&mut self, thread_local: &'a ThreadLocal<T>) -> Option<&'a T> {
-        while self.bucket < BUCKETS {
-            // SAFETY: The while loop condition check ensures that self.bucket will never be
-            // out of bounds for `buckets`, thus the result of get_unchecked_mut
-            // must be valid for all possible values of self.bucket.
-            let bucket = unsafe { thread_local.buckets.get_unchecked(self.bucket) };
+        while let Some(bucket) = thread_local.buckets.get(self.bucket) {
             let bucket = bucket.load(Ordering::Acquire);
 
             if !bucket.is_null() {
@@ -440,6 +430,7 @@ impl RawIter {
         }
         None
     }
+
     fn next_mut<'a, T: Send>(
         &mut self,
         thread_local: &'a mut ThreadLocal<T>,
@@ -485,12 +476,12 @@ impl RawIter {
     }
 
     fn size_hint<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
-        let total = thread_local.values.load(Ordering::Acquire);
+        let total = thread_local.values.load(Ordering::Relaxed);
         (total - self.yielded, None)
     }
 
     fn size_hint_frozen<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
-        let total = thread_local.values.load(Ordering::Acquire);
+        let total = thread_local.values.load(Ordering::Relaxed);
         let remaining = total - self.yielded;
         (remaining, Some(remaining))
     }
