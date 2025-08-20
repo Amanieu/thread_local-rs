@@ -165,10 +165,12 @@ impl<T: Send> Drop for ThreadLocal<T> {
 }
 
 impl<T: Send> ThreadLocal<T> {
+    const NULL_BUCKET: AtomicPtr<Entry<T>> = AtomicPtr::new(std::ptr::null_mut());
+
     /// Creates a new empty `ThreadLocal`.
     pub const fn new() -> ThreadLocal<T> {
         Self {
-            buckets: [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS],
+            buckets: [Self::NULL_BUCKET; BUCKETS],
             values: AtomicUsize::new(0),
         }
     }
@@ -179,7 +181,7 @@ impl<T: Send> ThreadLocal<T> {
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
         let allocated_buckets = (usize::BITS - capacity.leading_zeros()) as usize;
 
-        let mut buckets = [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS];
+        let mut buckets = [Self::NULL_BUCKET; BUCKETS];
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
             *bucket.get_mut() = allocate_bucket::<T>(1 << i);
         }
