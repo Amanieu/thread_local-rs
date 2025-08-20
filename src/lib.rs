@@ -165,7 +165,8 @@ impl<T: Send> Drop for ThreadLocal<T> {
 }
 
 impl<T: Send> ThreadLocal<T> {
-    const NULL_BUCKET: AtomicPtr<Entry<T>> = AtomicPtr::new(std::ptr::null_mut());
+    #[allow(clippy::declare_interior_mutable_const)]
+    const NULL_BUCKET: AtomicPtr<Entry<T>> = AtomicPtr::new(ptr::null_mut());
 
     /// Creates a new empty `ThreadLocal`.
     pub const fn new() -> ThreadLocal<T> {
