@@ -225,12 +225,13 @@ impl<T: Send> ThreadLocal<T> {
         if bucket_ptr.is_null() {
             return None;
         }
-        // SAFETY: Any allocation larger than isize::MAX bytes would fail to
-        // allocate and thus the `bucket` pointer will be null, it thus must
-        // be safe to that offset and create a mutable borrow from it.
-        //
-        // This function has immutable access to the `ThreadLocal` and its contents.
-        // so there should not be concurrent mutable accesses into the same entry.
+        // SAFETY:
+        // - Any allocation larger than isize::MAX bytes would fail to
+        //   allocate and thus the `bucket` pointer will be null, it thus must
+        //   be safe to that offset and create a mutable borrow from it.
+        // - This function has immutable access to the `ThreadLocal` and its contents.
+        //   so there should not be concurrent mutable accesses into the same entry.
+        // - `thread.index` is guaranteed to be in bounds within the selected bucket.
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
         // SAFETY: This function has immutable access to the `ThreadLocal` and its contents.
         // so there should not be concurrent mutable accesses into the same entry.
@@ -268,12 +269,13 @@ impl<T: Send> ThreadLocal<T> {
         };
 
         // Insert the new element into the bucket
-        // SAFETY: Any allocation larger than isize::MAX bytes would fail to
-        // allocate and thus the `bucket` pointer will be null, it thus must
-        // be safe to that offset and create a mutable borrow from it.
-        //
-        // This function has immutable access to the `ThreadLocal` and its contents.
-        // so there should not be concurrent mutable accesses into the same entry.
+        // SAFETY: 
+        // - Any allocation larger than isize::MAX bytes would fail to
+        //   allocate and thus the `bucket` pointer will be null, it thus must
+        //   be safe to that offset and create a mutable borrow from it.
+        // - This function has immutable access to the `ThreadLocal` and its contents.
+        //   so there should not be concurrent mutable accesses into the same entry.
+        // - `thread.index` is guaranteed to be in bounds within the selected bucket.
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
         let value_ptr = entry.value.get();
         // SAFETY: No concurrent read accesses are possible as this value has not
@@ -405,12 +407,13 @@ impl RawIter {
 
             if !bucket.is_null() {
                 while self.index < self.bucket_size {
-                    // SAFETY: Any allocation larger than isize::MAX bytes would fail to
-                    // allocate and thus the `bucket` pointer will be null, it thus must
-                    // be safe to that offset and create a mutable borrow from it.
-                    //
-                    // Iter have immutable access to the `ThreadLocal` and its contents.
-                    // so there should not be concurrent mutable accesses into the same entry.
+                    // SAFETY:
+                    // - Any allocation larger than isize::MAX bytes would fail to
+                    //   allocate and thus the `bucket` pointer will be null, it thus must
+                    //   be safe to that offset and create a mutable borrow from it.
+                    // - This function has immutable access to the `ThreadLocal` and its contents.
+                    //   so there should not be concurrent mutable accesses into the same entry.
+                    // - `thread.index` is guaranteed to be in bounds within the selected bucket.
                     let entry = unsafe { &*bucket.add(self.index) };
                     self.index += 1;
                     // SAFETY: As Iter has a read-only borrow on the ThreadLocal,
