@@ -181,7 +181,7 @@ impl<T: Send> ThreadLocal<T> {
 
         let mut buckets = [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS];
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
-            *bucket = AtomicPtr::new(allocate_bucket::<T>(1 << i));
+            *bucket.get_mut() = allocate_bucket::<T>(1 << i);
         }
 
         Self {
