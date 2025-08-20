@@ -221,7 +221,7 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
-        let bucket_ptr =self.get_bucket(thread).load(Ordering::Acquire);
+        let bucket_ptr = self.get_bucket(thread).load(Ordering::Acquire);
         if bucket_ptr.is_null() {
             return None;
         }
