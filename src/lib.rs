@@ -269,7 +269,7 @@ impl<T: Send> ThreadLocal<T> {
         };
 
         // Insert the new element into the bucket
-        // SAFETY: 
+        // SAFETY:
         // - Any allocation larger than isize::MAX bytes would fail to
         //   allocate and thus the `bucket` pointer will be null, it thus must
         //   be safe to that offset and create a mutable borrow from it.
