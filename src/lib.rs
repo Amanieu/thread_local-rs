@@ -201,8 +201,9 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
+        let result = self.get_or_try(|| Ok::<T, ()>(create()));
         // SAFETY: The provided closure will never return an Err instance.
-        unsafe { self.get_or_try(|| Ok::<T, ()>(create())).unwrap_unchecked() }
+        unsafe { result.unwrap_unchecked() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -499,13 +500,16 @@ pub struct Iter<'a, T: Send + Sync> {
 
 impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
     type Item = &'a T;
+
     fn next(&mut self) -> Option<Self::Item> {
         self.raw.next(self.thread_local)
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint(self.thread_local)
     }
 }
+
 impl<T: Send + Sync> FusedIterator for Iter<'_, T> {}
 
 /// Mutable iterator over the contents of a `ThreadLocal`.
@@ -516,6 +520,7 @@ pub struct IterMut<'a, T: Send> {
 
 impl<'a, T: Send> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
+
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next_mut(self.thread_local)
@@ -524,6 +529,7 @@ impl<'a, T: Send> Iterator for IterMut<'a, T> {
             // been initialized.
             .map(|entry| unsafe { (&mut *entry.value.get()).assume_init_mut() })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(self.thread_local)
     }
@@ -549,6 +555,7 @@ pub struct IntoIter<T: Send> {
 
 impl<T: Send> Iterator for IntoIter<T> {
     type Item = T;
+
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
@@ -561,6 +568,7 @@ impl<T: Send> Iterator for IntoIter<T> {
             unsafe { old_value.assume_init() }
         })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(&self.thread_local)
     }
