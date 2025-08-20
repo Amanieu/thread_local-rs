@@ -1,0 +1,24 @@
+[package]
+name = "benches"
+description = "Benchmarks that test thread_local's performance"
+publish = false
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2021"
+
+[dependencies]
+criterion = "0.5.1"
+
+[dev-dependencies]
+thread_local = { path = ".." }
+
+[lib]
+# This fixes the "Unrecognized Option" error when running commands like
+# `cargo bench -- --save-baseline before` by disabling the default benchmark harness.
+# See <https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options>
+# for more information.
+bench = false
+
+[[bench]]
+name = "thread_local"
+harness = false

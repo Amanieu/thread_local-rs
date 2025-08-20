@@ -64,12 +64,12 @@
 //! ```
 
 #![warn(missing_docs)]
-#![allow(clippy::mutex_atomic)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(feature = "nightly", feature(thread_local))]
 
 mod cached;
 mod thread_id;
-mod unreachable;
 
 #[allow(deprecated)]
 pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
@@ -77,25 +77,15 @@ pub use cached::{CachedIntoIter, CachedIterMut, CachedThreadLocal};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::iter::FusedIterator;
-use std::mem;
 use std::mem::MaybeUninit;
 use std::panic::UnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use thread_id::Thread;
-use unreachable::UncheckedResultExt;
-
-// Use usize::BITS once it has stabilized and the MSRV has been bumped.
-#[cfg(target_pointer_width = "16")]
-const POINTER_WIDTH: u8 = 16;
-#[cfg(target_pointer_width = "32")]
-const POINTER_WIDTH: u8 = 32;
-#[cfg(target_pointer_width = "64")]
-const POINTER_WIDTH: u8 = 64;
 
 /// The total number of buckets stored in each thread local.
 /// All buckets combined can hold up to `usize::MAX - 1` entries.
-const BUCKETS: usize = (POINTER_WIDTH - 1) as usize;
+const BUCKETS: usize = (usize::BITS - 1) as usize;
 
 /// Thread-local variable wrapper
 ///
@@ -115,17 +105,39 @@ struct Entry<T> {
     value: UnsafeCell<MaybeUninit<T>>,
 }
 
+impl<T> Entry<T> {
+    fn get_value_cell(&self) -> Option<&UnsafeCell<MaybeUninit<T>>> {
+        self.present.load(Ordering::Acquire).then_some(&self.value)
+    }
+
+    /// # Safety
+    /// The caller must guarantee that there are no concurent mutable accesses into
+    /// this entry's value.
+    unsafe fn as_ref<'a>(&self) -> Option<&'a T> {
+        self.get_value_cell()
+            // SAFETY: The caller guarantees that there are no concurrent mutable
+            // accesses into this value.
+            .map(|cell| unsafe { (&*cell.get()).assume_init_ref() })
+    }
+}
+
 impl<T> Drop for Entry<T> {
     fn drop(&mut self) {
-        unsafe {
-            if *self.present.get_mut() {
-                ptr::drop_in_place((*self.value.get()).as_mut_ptr());
+        if *self.present.get_mut() {
+            // SAFETY:
+            //  * If `present` is true, then the value was properly initalized.
+            //    and never dropped before.
+            //  * The value is embedded within an `Entry<T>` so the produced
+            //    pointer must be properly aligned and non-null, even if T is
+            //    a ZST.
+            unsafe {
+                MaybeUninit::assume_init_drop(&mut *self.value.get());
             }
         }
     }
 }
 
-// ThreadLocal is always Sync, even if T isn't
+// SAFETY: ThreadLocal is always Sync, even if T isn't
 unsafe impl<T: Send> Sync for ThreadLocal<T> {}
 
 impl<T: Send> Default for ThreadLocal<T> {
@@ -146,17 +158,20 @@ impl<T: Send> Drop for ThreadLocal<T> {
                 continue;
             }
 
+            // SAFETY: All buckets are allocated from `allocate_bucket`.
             unsafe { deallocate_bucket(bucket_ptr, this_bucket_size) };
         }
     }
 }
 
 impl<T: Send> ThreadLocal<T> {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const NULL_BUCKET: AtomicPtr<Entry<T>> = AtomicPtr::new(ptr::null_mut());
+
     /// Creates a new empty `ThreadLocal`.
     pub const fn new() -> ThreadLocal<T> {
-        let buckets = [ptr::null_mut::<Entry<T>>(); BUCKETS];
         Self {
-            buckets: unsafe { mem::transmute(buckets) },
+            buckets: [Self::NULL_BUCKET; BUCKETS],
             values: AtomicUsize::new(0),
         }
     }
@@ -165,17 +180,15 @@ impl<T: Send> ThreadLocal<T> {
     /// access the thread local it will never reallocate. The capacity may be rounded up to the
     /// nearest power of two.
     pub fn with_capacity(capacity: usize) -> ThreadLocal<T> {
-        let allocated_buckets = usize::from(POINTER_WIDTH) - (capacity.leading_zeros() as usize);
+        let allocated_buckets = (usize::BITS - capacity.leading_zeros()) as usize;
 
-        let mut buckets = [ptr::null_mut(); BUCKETS];
+        let mut buckets = [Self::NULL_BUCKET; BUCKETS];
         for (i, bucket) in buckets[..allocated_buckets].iter_mut().enumerate() {
-            *bucket = allocate_bucket::<T>(1 << i);
+            *bucket.get_mut() = allocate_bucket::<T>(1 << i);
         }
 
         Self {
-            // Safety: AtomicPtr has the same representation as a pointer and arrays have the same
-            // representation as a sequence of their inner type.
-            buckets: unsafe { mem::transmute(buckets) },
+            buckets,
             values: AtomicUsize::new(0),
         }
     }
@@ -191,10 +204,9 @@ impl<T: Send> ThreadLocal<T> {
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.get_or_try(|| Ok::<T, ()>(create()))
-                .unchecked_unwrap_ok()
-        }
+        let result = self.get_or_try(|| Ok::<T, ()>(create()));
+        // SAFETY: The provided closure will never return an Err instance.
+        unsafe { result.unwrap_unchecked() }
     }
 
     /// Returns the element for the current thread, or creates it if it doesn't
@@ -213,24 +225,26 @@ impl<T: Send> ThreadLocal<T> {
     }
 
     fn get_inner(&self, thread: Thread) -> Option<&T> {
-        let bucket_ptr =
-            unsafe { self.buckets.get_unchecked(thread.bucket) }.load(Ordering::Acquire);
+        let bucket_ptr = self.get_bucket(thread).load(Ordering::Acquire);
         if bucket_ptr.is_null() {
             return None;
         }
-        unsafe {
-            let entry = &*bucket_ptr.add(thread.index);
-            if entry.present.load(Ordering::Relaxed) {
-                Some(&*(&*entry.value.get()).as_ptr())
-            } else {
-                None
-            }
-        }
+        // SAFETY:
+        // - Any allocation larger than isize::MAX bytes would fail to
+        //   allocate and thus the `bucket` pointer will be null, it thus must
+        //   be safe to that offset and create a mutable borrow from it.
+        // - This function has immutable access to the `ThreadLocal` and its contents.
+        //   so there should not be concurrent mutable accesses into the same entry.
+        // - `thread.index` is guaranteed to be in bounds within the selected bucket.
+        let entry = unsafe { &*bucket_ptr.add(thread.index) };
+        // SAFETY: This function has immutable access to the `ThreadLocal` and its contents.
+        // so there should not be concurrent mutable accesses into the same entry.
+        unsafe { entry.as_ref() }
     }
 
     #[cold]
     fn insert(&self, thread: Thread, data: T) -> &T {
-        let bucket_atomic_ptr = unsafe { self.buckets.get_unchecked(thread.bucket) };
+        let bucket_atomic_ptr = self.get_bucket(thread);
         let bucket_ptr: *const _ = bucket_atomic_ptr.load(Ordering::Acquire);
 
         // If the bucket doesn't already exist, we need to allocate it
@@ -248,6 +262,8 @@ impl<T: Send> ThreadLocal<T> {
                 // another thread stored a new bucket before we could,
                 // and we can free our bucket and use that one instead
                 Err(bucket_ptr) => {
+                    // SAFETY: This bucket was just allocated from the call
+                    // allocate_bucket above, and using the same bucket size.
                     unsafe { deallocate_bucket(new_bucket, thread.bucket_size()) }
                     bucket_ptr
                 }
@@ -257,14 +273,33 @@ impl<T: Send> ThreadLocal<T> {
         };
 
         // Insert the new element into the bucket
+        // SAFETY:
+        // - Any allocation larger than isize::MAX bytes would fail to
+        //   allocate and thus the `bucket` pointer will be null, it thus must
+        //   be safe to that offset and create a mutable borrow from it.
+        // - This function has immutable access to the `ThreadLocal` and its contents.
+        //   so there should not be concurrent mutable accesses into the same entry.
+        // - `thread.index` is guaranteed to be in bounds within the selected bucket.
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
         let value_ptr = entry.value.get();
+        // SAFETY: No concurrent read accesses are possible as this value has not
+        // been initialized until now, and no data races are possible since only
+        // the local thread can access this value. The target location of the pointer
+        // is valid since it came from the UnsafeCell and a valid initialized value
+        // of type `T` is being written into the cell.
         unsafe { value_ptr.write(MaybeUninit::new(data)) };
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
 
-        unsafe { &*(&*value_ptr).as_ptr() }
+        // SAFETY: The value was just initialized to the provided value.
+        unsafe { (&*value_ptr).assume_init_ref() }
+    }
+
+    #[inline]
+    fn get_bucket(&self, thread: Thread) -> &AtomicPtr<Entry<T>> {
+        // SAFETY: Thread::bucket can never be BUCKETS or larger, and thus must be a valid offset.
+        unsafe { self.buckets.get_unchecked(thread.bucket) }
     }
 
     /// Returns an iterator over the local values of all threads in unspecified
@@ -287,7 +322,7 @@ impl<T: Send> ThreadLocal<T> {
     /// Since this call borrows the `ThreadLocal` mutably, this operation can
     /// be done safely---the mutable borrow statically guarantees no other
     /// threads are currently accessing their associated values.
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             thread_local: self,
             raw: RawIter::new(),
@@ -358,6 +393,7 @@ struct RawIter {
     bucket_size: usize,
     index: usize,
 }
+
 impl RawIter {
     #[inline]
     fn new() -> Self {
@@ -370,17 +406,29 @@ impl RawIter {
     }
 
     fn next<'a, T: Send + Sync>(&mut self, thread_local: &'a ThreadLocal<T>) -> Option<&'a T> {
-        while self.bucket < BUCKETS {
-            let bucket = unsafe { thread_local.buckets.get_unchecked(self.bucket) };
+        while let Some(bucket) = thread_local.buckets.get(self.bucket) {
             let bucket = bucket.load(Ordering::Acquire);
 
             if !bucket.is_null() {
                 while self.index < self.bucket_size {
+                    // SAFETY:
+                    // - Any allocation larger than isize::MAX bytes would fail to
+                    //   allocate and thus the `bucket` pointer will be null, it thus must
+                    //   be safe to that offset and create a mutable borrow from it.
+                    // - This function has immutable access to the `ThreadLocal` and its contents.
+                    //   so there should not be concurrent mutable accesses into the same entry.
+                    // - `thread.index` is guaranteed to be in bounds within the selected bucket.
                     let entry = unsafe { &*bucket.add(self.index) };
                     self.index += 1;
-                    if entry.present.load(Ordering::Acquire) {
+                    // SAFETY: As Iter has a read-only borrow on the ThreadLocal,
+                    // no mutable borrows on the values stored inside can exist at
+                    // the same time.
+                    //
+                    // The above present check is properly synchronized and ensures
+                    // that the value has been properly initialized.
+                    if let Some(value) = unsafe { entry.as_ref() } {
                         self.yielded += 1;
-                        return Some(unsafe { &*(&*entry.value.get()).as_ptr() });
+                        return Some(value);
                     }
                 }
             }
@@ -389,6 +437,7 @@ impl RawIter {
         }
         None
     }
+
     fn next_mut<'a, T: Send>(
         &mut self,
         thread_local: &'a mut ThreadLocal<T>,
@@ -398,11 +447,21 @@ impl RawIter {
         }
 
         loop {
+            // SAFETY: The above if check will evaluate to true before self.bucket grows
+            // large enough to be bigger than BUCKETS, thus the result of get_unchecked_mut
+            // must be valid for all possible values of self.bucket.
             let bucket = unsafe { thread_local.buckets.get_unchecked_mut(self.bucket) };
             let bucket = *bucket.get_mut();
 
             if !bucket.is_null() {
                 while self.index < self.bucket_size {
+                    // SAFETY: Any allocation larger than isize::MAX bytes would fail to
+                    // allocate and thus the `bucket` pointer will be null, it thus must
+                    // be safe to that offset and create a mutable borrow from it.
+                    //
+                    // IterMut and IntoIter both have exclusive access to the
+                    // `ThreadLocal` and its contents, so there should not be concurrent
+                    // immutable accesses into the same entry.
                     let entry = unsafe { &mut *bucket.add(self.index) };
                     self.index += 1;
                     if *entry.present.get_mut() {
@@ -424,11 +483,12 @@ impl RawIter {
     }
 
     fn size_hint<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
-        let total = thread_local.values.load(Ordering::Acquire);
+        let total = thread_local.values.load(Ordering::Relaxed);
         (total - self.yielded, None)
     }
+
     fn size_hint_frozen<T: Send>(&self, thread_local: &ThreadLocal<T>) -> (usize, Option<usize>) {
-        let total = unsafe { *(&thread_local.values as *const AtomicUsize as *const usize) };
+        let total = thread_local.values.load(Ordering::Relaxed);
         let remaining = total - self.yielded;
         (remaining, Some(remaining))
     }
@@ -443,13 +503,16 @@ pub struct Iter<'a, T: Send + Sync> {
 
 impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
     type Item = &'a T;
+
     fn next(&mut self) -> Option<Self::Item> {
         self.raw.next(self.thread_local)
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint(self.thread_local)
     }
 }
+
 impl<T: Send + Sync> FusedIterator for Iter<'_, T> {}
 
 /// Mutable iterator over the contents of a `ThreadLocal`.
@@ -460,11 +523,16 @@ pub struct IterMut<'a, T: Send> {
 
 impl<'a, T: Send> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
+
     fn next(&mut self) -> Option<&'a mut T> {
         self.raw
             .next_mut(self.thread_local)
-            .map(|entry| unsafe { &mut *(&mut *entry.value.get()).as_mut_ptr() })
+            // SAFETY: IterMut has exclusive access to the underlying ThreadLocal
+            // and if RawIter::next_mut returns an entry, it's guaranteed to have
+            // been initialized.
+            .map(|entry| unsafe { (&mut *entry.value.get()).assume_init_mut() })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(self.thread_local)
     }
@@ -490,14 +558,20 @@ pub struct IntoIter<T: Send> {
 
 impl<T: Send> Iterator for IntoIter<T> {
     type Item = T;
+
     fn next(&mut self) -> Option<T> {
         self.raw.next_mut(&mut self.thread_local).map(|entry| {
             *entry.present.get_mut() = false;
-            unsafe {
-                std::mem::replace(&mut *entry.value.get(), MaybeUninit::uninit()).assume_init()
-            }
+            // SAFETY: IntoIter owns the ThreadLocal and has exclusive access to it
+            // and the values stored within.
+            let cell = unsafe { &mut *entry.value.get() };
+            let old_value = std::mem::replace(cell, MaybeUninit::uninit());
+            // SAFETY: If RawIter returned a non-None result, it means this cell was
+            // previously populated and thus has been initialized.
+            unsafe { old_value.assume_init() }
         })
     }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.raw.size_hint_frozen(&self.thread_local)
     }
@@ -517,8 +591,22 @@ fn allocate_bucket<T>(size: usize) -> *mut Entry<T> {
     ) as *mut _
 }
 
+/// # Safety
+/// The caller must ensure that `bucket` was allocated from [allocate_bucket]
+/// with the same `size` parameter.
 unsafe fn deallocate_bucket<T>(bucket: *mut Entry<T>, size: usize) {
-    let _ = Box::from_raw(std::slice::from_raw_parts_mut(bucket, size));
+    // SAFETY: The caller ensures that the bucket pointer and size come from a
+    // corresponding call to `allocate_bucket` with an identical size, and thus:
+    //  * `bucket` must not be null.
+    //  * `size` must match the same length as when the bucket was allocated.
+    //  * `bucket` points to a slice of properly initialized `Entry<T>`.
+    //  * The total size of the allocation cannot be larger than isize::MAX
+    //    bytes or the allocation would have failed and panicked.
+    let slice = unsafe { std::slice::from_raw_parts_mut(bucket, size) };
+    // SAFETY: It's the caller's responsibliity that the bucket was created
+    // from `allocate_bucket`, which ensures that it was allocated using the
+    // global allocator.
+    drop(unsafe { Box::from_raw(slice) });
 }
 
 #[cfg(test)]
