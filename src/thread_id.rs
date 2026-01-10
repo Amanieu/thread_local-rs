@@ -8,26 +8,26 @@
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Thread ID manager which allocates thread IDs. It attempts to aggressively
 /// reuse thread IDs where possible to avoid cases where a ThreadLocal grows
 /// indefinitely when it is used by many short-lived threads.
 struct ThreadIdManager {
     free_from: usize,
-    free_list: Option<BinaryHeap<Reverse<usize>>>,
+    free_list: BinaryHeap<Reverse<usize>>,
 }
 
 impl ThreadIdManager {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             free_from: 0,
-            free_list: None,
+            free_list: BinaryHeap::new(),
         }
     }
 
     fn alloc(&mut self) -> usize {
-        if let Some(id) = self.free_list.as_mut().and_then(|heap| heap.pop()) {
+        if let Some(id) = self.free_list.pop() {
             id.0
         } else {
             // `free_from` can't overflow as each thread takes up at least 2 bytes of memory and
@@ -40,13 +40,14 @@ impl ThreadIdManager {
     }
 
     fn free(&mut self, id: usize) {
-        self.free_list
-            .get_or_insert_with(BinaryHeap::new)
-            .push(Reverse(id));
+        self.free_list.push(Reverse(id));
+    }
+
+    fn singleton() -> &'static Mutex<Self> {
+        static THREAD_ID_MANAGER: OnceLock<Mutex<ThreadIdManager>> = OnceLock::new();
+        THREAD_ID_MANAGER.get_or_init(|| Mutex::new(ThreadIdManager::new()))
     }
 }
-
-static THREAD_ID_MANAGER: Mutex<ThreadIdManager> = Mutex::new(ThreadIdManager::new());
 
 /// Data which is unique to the current thread while it is running.
 /// A thread ID may be reused after a thread exits.
@@ -103,7 +104,7 @@ cfg_if::cfg_if! {
                 unsafe {
                     THREAD = None;
                 }
-                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
+                ThreadIdManager::singleton().lock().unwrap().free(self.id.get());
             }
         }
 
@@ -127,7 +128,7 @@ cfg_if::cfg_if! {
         /// Out-of-line slow path for allocating a thread ID.
         #[cold]
          fn get_slow() -> Thread {
-            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            let new = Thread::new(ThreadIdManager::singleton().lock().unwrap().alloc());
             unsafe {
                 THREAD = Some(new);
             }
@@ -156,7 +157,7 @@ cfg_if::cfg_if! {
                 // will go through get_slow which will either panic or
                 // initialize a new ThreadGuard.
                 let _ = THREAD.try_with(|thread| thread.set(None));
-                THREAD_ID_MANAGER.lock().unwrap().free(self.id.get());
+                ThreadIdManager::singleton().lock().unwrap().free(self.id.get());
             }
         }
 
@@ -182,7 +183,7 @@ cfg_if::cfg_if! {
         /// Out-of-line slow path for allocating a thread ID.
         #[cold]
         fn get_slow(thread: &Cell<Option<Thread>>) -> Thread {
-            let new = Thread::new(THREAD_ID_MANAGER.lock().unwrap().alloc());
+            let new = Thread::new(ThreadIdManager::singleton().lock().unwrap().alloc());
             thread.set(Some(new));
             THREAD_GUARD.with(|guard| guard.id.set(new.id()));
             new
