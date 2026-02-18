@@ -10,7 +10,7 @@ checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 
 [[package]]
 name = "thread_local"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "cfg-if",
 ]
