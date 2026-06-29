@@ -286,13 +286,12 @@ impl<T: Send> ThreadLocal<T> {
         // the local thread can access this value. The target location of the pointer
         // is valid since it came from the UnsafeCell and a valid initialized value
         // of type `T` is being written into the cell.
-        unsafe { value_ptr.write(MaybeUninit::new(data)) };
+        let data_ref = &*unsafe { &mut *value_ptr }.write(data);
         entry.present.store(true, Ordering::Release);
 
         self.values.fetch_add(1, Ordering::Release);
 
-        // SAFETY: The value was just initialized to the provided value.
-        unsafe { (&*value_ptr).assume_init_ref() }
+        data_ref
     }
 
     #[inline]
