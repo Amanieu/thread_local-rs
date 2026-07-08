@@ -131,7 +131,7 @@ cfg_if::cfg_if! {
             unsafe {
                 THREAD = Some(new);
             }
-            THREAD_GUARD.with(|guard| guard.id.set(new.id));
+            THREAD_GUARD.with(|guard| guard.id.set(new.id()));
             new
         }
     } else {
