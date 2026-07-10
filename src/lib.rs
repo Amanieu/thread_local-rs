@@ -280,6 +280,17 @@ impl<T: Send> ThreadLocal<T> {
         //   so there should not be concurrent mutable accesses into the same entry.
         // - `thread.index` is guaranteed to be in bounds within the selected bucket.
         let entry = unsafe { &*bucket_ptr.add(thread.index) };
+        // If `create` reentrantly called `get_or`/`get_or_try` on this same
+        // `ThreadLocal` from this thread, the slot is already initialized. Return
+        // the existing value and drop the one we just created, instead of
+        // overwriting it. Overwriting would leak the old value, double-count
+        // `self.values` (causing out-of-bounds iteration in `RawIter::next_mut`),
+        // and invalidate references handed out by the reentrant call.
+        // SAFETY: This function has `&self`, so there are no concurrent mutable
+        // accesses into this entry (this thread's slot is only written by this thread).
+        if let Some(existing) = unsafe { entry.as_ref() } {
+            return existing;
+        }
         let value_ptr = entry.value.get();
         // SAFETY: No concurrent read accesses are possible as this value has not
         // been initialized until now, and no data races are possible since only
@@ -647,6 +658,23 @@ mod tests {
         assert_eq!("ThreadLocal { local_data: Some(0) }", format!("{:?}", &tls));
         tls.clear();
         assert_eq!(None, tls.get());
+    }
+
+    #[test]
+    fn reentrant_get_or() {
+        let tls: ThreadLocal<Box<u32>> = ThreadLocal::new();
+        let outer = tls.get_or(|| {
+            let inner = tls.get_or(|| Box::new(1));
+            assert_eq!(**inner, 1);
+            Box::new(2)
+        });
+        // The reentrant call already populated the slot, so the outer
+        // value is discarded and the existing value is returned.
+        assert_eq!(**outer, 1);
+        // Pre-fix, `values` was double-counted and this iterated out of
+        // bounds (UB caught by Miri). Post-fix exactly one value is present.
+        let collected: Vec<u32> = tls.into_iter().map(|b| *b).collect();
+        assert_eq!(collected, vec![1]);
     }
 
     #[test]
