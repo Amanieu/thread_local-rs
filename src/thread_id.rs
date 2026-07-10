@@ -15,19 +15,19 @@ use std::sync::Mutex;
 /// indefinitely when it is used by many short-lived threads.
 struct ThreadIdManager {
     free_from: usize,
-    free_list: Option<BinaryHeap<Reverse<usize>>>,
+    free_list: BinaryHeap<Reverse<usize>>,
 }
 
 impl ThreadIdManager {
     const fn new() -> Self {
         Self {
             free_from: 0,
-            free_list: None,
+            free_list: BinaryHeap::new(),
         }
     }
 
     fn alloc(&mut self) -> usize {
-        if let Some(id) = self.free_list.as_mut().and_then(|heap| heap.pop()) {
+        if let Some(id) = self.free_list.pop() {
             id.0
         } else {
             // `free_from` can't overflow as each thread takes up at least 2 bytes of memory and
@@ -40,9 +40,7 @@ impl ThreadIdManager {
     }
 
     fn free(&mut self, id: usize) {
-        self.free_list
-            .get_or_insert_with(BinaryHeap::new)
-            .push(Reverse(id));
+        self.free_list.push(Reverse(id));
     }
 }
 
@@ -57,6 +55,7 @@ pub(crate) struct Thread {
     /// The index into the bucket this thread's local storage is in.
     pub(crate) index: usize,
 }
+
 impl Thread {
     pub(crate) fn new(id: usize) -> Self {
         let bucket = (usize::BITS as usize) - ((id + 1).leading_zeros() as usize) - 1;
